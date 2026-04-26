@@ -29,10 +29,9 @@ scheduler:
 
 # LLM 配置
 llm:
-  # MiniMax API（OpenAI 兼容接口）
-  provider: "minimax"
-  model: "MiniMax2.7"  # 待确认模型名
-  base_url: "https://api.minimax.io/v1"
+  provider: "anthropic"
+  model: "MiniMax-M2.7"
+  base_url: "https://api.minimax.io/anthropic/v1"
   api_key: "${MINIMAX_API_KEY}"  # 从环境变量读取
   max_tokens: 500
   temperature: 0.7
