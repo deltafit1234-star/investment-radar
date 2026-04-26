@@ -1,0 +1,52 @@
+# 投资雷达 - 全局配置
+
+app:
+  name: "投资雷达"
+  version: "0.1.0"
+  debug: true  # 🔧 DEBUG: 开发模式，生产环境改为 false
+
+# 数据库配置
+database:
+  # 🚨 SHORTcut: 使用 SQLite 进行本地验证
+  # TODO(FUTURE): 生产环境改为 PostgreSQL
+  type: "sqlite"
+  path: "data/radar.db"
+
+# 调度配置
+scheduler:
+  # 🚨 SHORTcut: 本地开发使用 APScheduler，生产环境使用 Airflow/K8s CronJob
+  # TODO(FUTURE): 生产环境迁移到 Airflow 或 K8s CronJob
+  type: "apscheduler"
+  
+  # 采集任务调度
+  jobs:
+    github_trending:
+      schedule: "0 9 * * *"      # 每天9:00
+      enabled: true
+    arxiv_fetch:
+      schedule: "0 8,20 * * *"  # 每天8:00和20:00
+      enabled: true
+
+# LLM 配置
+llm:
+  # MiniMax API（OpenAI 兼容接口）
+  provider: "minimax"
+  model: "MiniMax2.7"  # 待确认模型名
+  base_url: "https://api.minimax.io/v1"
+  api_key: "${MINIMAX_API_KEY}"  # 从环境变量读取
+  max_tokens: 500
+  temperature: 0.7
+
+# 推送配置
+notification:
+  default_channel: "wechat"
+  daily_brief_time: "08:30"
+  real_time_enabled: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>"
+  rotation: "100 MB"
+  retention: "30 days"
+  path: "logs/radar.log"

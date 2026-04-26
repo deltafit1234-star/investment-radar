@@ -1,0 +1,158 @@
+# AI大模型及应用层 - 赛道配置
+
+track_id: "ai_llm"
+track_name: "AI大模型及应用层"
+category: "P0"
+enabled: true
+
+# 数据源配置
+sources:
+  - source_id: "github_trending"
+    name: "GitHub Trending"
+    type: "api"
+    provider: "github"
+    endpoint: "/search/repositories"
+    enabled: true
+    schedule: "0 9 * * *"
+    params:
+      q: "language:python created:>{date_7d}"
+      sort: "stars"
+      order: "desc"
+      per_page: 25
+
+  - source_id: "arxiv_cs_ai"
+    name: "arXiv cs.AI/cs.CL"
+    type: "api"
+    provider: "arxiv"
+    endpoint: "http://export.arxiv.org/api/query"
+    enabled: true
+    schedule: "0 8,20 * * *"
+    params:
+      search_query: "cat:cs.AI OR cat:cs.CL"
+      max_results: 50
+      sortBy: "submittedDate"
+      sortOrder: "descending"
+
+  - source_id: "huggingface_models"
+    name: "HuggingFace Models"
+    type: "api"
+    provider: "huggingface"
+    endpoint: "https://huggingface.co/api/models"
+    enabled: true
+    schedule: "0 10 * * *"
+    params:
+      sort: "trending"
+      limit: 50
+
+  - source_id: "36kr_tech"
+    name: "36kr 科技新闻"
+    type: "rss"
+    provider: "36kr"
+    endpoint: "https://36kr.com/feed"
+    enabled: true
+    schedule: "0 9,12,18 * * *"
+
+# 检测规则
+detection_rules:
+  - rule_id: "star_surge"
+    name: "Star数量异常增长"
+    description: "7天内Star增长超过阈值"
+    enabled: true
+    metric: "stars_growth_7d"
+    threshold:
+      high: 0.5      # 50%增长 → 高优先级
+      medium: 0.3    # 30%增长 → 中优先级
+      low: 0.1       # 10%增长 → 低优先级
+    filters:
+      min_stars: 1000   # 最低基数，避免小项目噪音
+      min_stars_growth: 100  # 最低增长绝对值
+
+  - rule_id: "new_model_release"
+    name: "新模型发布"
+    description: "HuggingFace/GitHub新模型发布"
+    enabled: true
+    keywords:
+      - "model"
+      - "llm"
+      - "gpt"
+      - "claude"
+      - "release"
+      - "v1"
+      - "v2"
+      - "beta"
+    priority: "high"
+
+  - rule_id: "paper_burst"
+    name: "论文激增"
+    description: "某领域论文突然增多"
+    enabled: true
+    threshold:
+      high: 20    # 24h内 > 20篇
+      medium: 10  # 24h内 > 10篇
+    keywords:
+      - "transformer"
+      - "attention"
+      - "LLM"
+      - "language model"
+      - "GPT"
+      - "BERT"
+
+  - rule_id: "funding_news"
+    name: "融资新闻"
+    description: "检测赛道相关融资事件"
+    enabled: true
+    keywords:
+      - "融资"
+      - "获投"
+      - "B轮"
+      - "C轮"
+      - "估值"
+      - "人民币"
+      - "美元"
+    priority: "high"
+
+# 关键词过滤（用于信号提取和关联）
+keywords:
+  include:
+    - "大模型"
+    - "LLM"
+    - "GPT"
+    - "Claude"
+    - "Llama"
+    - "开源模型"
+    - "多模态"
+    - "Agent"
+    - "AI模型"
+    - "文心"
+    - "通义"
+    - "智谱"
+    - "Kimi"
+    - "ChatGPT"
+    - "Sora"
+    - "GPT-4"
+  exclude:
+    - "恶意"
+    - "虚假"
+    - "诈骗"
+    - "赌博"
+
+# 信号处理管道
+signal_pipeline:
+  - step: "extract"
+    description: "从数据源提取原始信号"
+  - step: "enrich"
+    description: "LLM补充上下文信息"
+    enabled: true
+  - step: "filter"
+    description: "按关键词过滤"
+  - step: "score"
+    description: "计算信号强度"
+  - step: "route"
+    description: "根据租户配置路由告警"
+
+# 关联分析规则
+correlation_rules:
+  - rule_id: "vc_entry_correlation"
+    trigger: "funding_news"
+    meaning: "某VC入场可能意味着竞争加剧"
+    related_tracks: []  # 暂不关联其他赛道
