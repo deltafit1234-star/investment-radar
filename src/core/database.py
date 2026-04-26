@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import json
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, JSON, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from loguru import logger
@@ -75,6 +75,32 @@ class Alert(Base):
             "status": self.status,
             "sent_at": self.sent_at.isoformat() if self.sent_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class StarHistory(Base):
+    """GitHub 项目 Star 历史表"""
+    __tablename__ = "star_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(100))        # 仓库所有者
+    repo = Column(String(100))         # 仓库名
+    stars = Column(Integer)            # 当前 star 数
+    rank = Column(Integer, nullable=True)  # 当天 trending 排名
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_star_history_repo_fetched', 'owner', 'repo', 'fetched_at'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "owner": self.owner,
+            "repo": self.repo,
+            "stars": self.stars,
+            "rank": self.rank,
+            "fetched_at": self.fetched_at.isoformat() if self.fetched_at else None,
         }
 
 
@@ -232,6 +258,62 @@ class Database:
                 .order_by(RawData.fetched_at.desc())
                 .first()
             )
+        finally:
+            session.close()
+
+    # ─── Star History ──────────────────────────────────────────────
+    def save_star_snapshot(self, owner: str, repo: str, stars: int, rank: int = None) -> StarHistory:
+        """保存一次 star 快照"""
+        session = self.get_session()
+        try:
+            snap = StarHistory(owner=owner, repo=repo, stars=stars, rank=rank)
+            session.add(snap)
+            session.commit()
+            session.refresh(snap)
+            return snap
+        except Exception as e:
+            session.rollback()
+            logger.error(f"保存 star 快照失败: {e}")
+            raise
+        finally:
+            session.close()
+
+    def get_previous_stars(self, owner: str, repo: str, hours: int = 24) -> Optional[StarHistory]:
+        """获取最近一次 star 快照"""
+        from datetime import timedelta
+        session = self.get_session()
+        try:
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            return (
+                session.query(StarHistory)
+                .filter(
+                    StarHistory.owner == owner,
+                    StarHistory.repo == repo,
+                    StarHistory.fetched_at < cutoff
+                )
+                .order_by(StarHistory.fetched_at.desc())
+                .first()
+            )
+        finally:
+            session.close()
+
+    def get_star_trend(self, owner: str, repo: str, days: int = 7) -> List[Dict[str, Any]]:
+        """获取 star 趋势（最近 N 天）"""
+        from datetime import timedelta
+        session = self.get_session()
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            records = (
+                session.query(StarHistory)
+                .filter(
+                    StarHistory.owner == owner,
+                    StarHistory.repo == repo,
+                    StarHistory.fetched_at >= cutoff
+                )
+                .order_by(StarHistory.fetched_at.asc())
+                .all()
+            )
+            return [r.to_dict() for r in records]
         finally:
             session.close()
 
