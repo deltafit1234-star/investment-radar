@@ -15,11 +15,18 @@ AI大模型赛道早期信号检测系统。
 - [x] **Star 历史追踪** — SQLite 存储，24h 对比
 - [x] **关联分析** — Star激增 + 论文爆发 + 新闻 = 高置信度
 
-## Phase 2 — 待开发
-- [ ] 36kr 文章正文抓取
-- [ ] HuggingFace 模型详情页抓取
-- [ ] 每周报告生成 (LLM)
-- [ ] 多赛道支持
+## Phase 2 — 内容丰富化 (已完成)
+- [x] **36kr 文章正文抓取** — BeautifulSoup 解析 HTML 页面
+- [x] **每周报告生成** — MiniMax M2.7 生成结构化周报
+- [x] **arXiv 全文 PDF** — PyMuPDF 提取 PDF 正文
+
+## Phase 3 — Web 界面 + 多赛道 (已完成)
+- [x] **多赛道支持** — 人形机器人/自动驾驶/半导体 独立配置
+- [x] **信号去重** — 7天 Jaccard 相似度 > 80% 自动跳过
+- [x] **Web Dashboard** — FastAPI + HTML + Chart.js
+- [x] **管理后台** — 赛道开关/推送记录/推送统计
+- [x] **实时 SSE** — 数据库轮询，新信号实时推送
+- [x] **arXiv 全文 PDF** — PyMuPDF 提取，最多50页
 
 ## 快速开始
 
@@ -47,6 +54,17 @@ python scripts/run_local.py --skip-notification
 | arXiv cs.AI/cs.CL | API | 每日8:00/20:00 |
 | 36kr 科技新闻 | RSS | 每日9:00/12:00/18:00 |
 | HuggingFace | API | 每日10:00 (需网络) |
+| arXiv PDF 全文 | PDF | PyMuPDF 提取，最多50页 |
+
+## Web Dashboard
+
+```bash
+# 启动 Dashboard
+python scripts/app.py --port 8765
+# 浏览器打开 http://localhost:8765
+```
+
+功能：实时信号 SSE / 统计卡片 / Chart.js 趋势图 / 信号列表 / 管理后台（赛道开关/推送记录）
 
 ## 架构
 

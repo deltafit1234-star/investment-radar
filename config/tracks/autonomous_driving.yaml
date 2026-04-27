@@ -1,0 +1,122 @@
+# 自动驾驶 - 赛道配置
+
+track_id: "autonomous_driving"
+track_name: "自动驾驶"
+category: "P1"
+enabled: true
+
+# 数据源配置
+sources:
+  - source_id: "github_trending"
+    name: "GitHub Trending"
+    type: "api"
+    provider: "github"
+    endpoint: "/search/repositories"
+    enabled: true
+    schedule: "0 9 * * *"
+    params:
+      q: "language:python created:>{date_7d}"
+      sort: "stars"
+      order: "desc"
+      per_page: 25
+
+  - source_id: "arxiv_cv"
+    name: "arXiv Computer Vision"
+    type: "api"
+    provider: "arxiv"
+    endpoint: "http://export.arxiv.org/api/query"
+    enabled: true
+    schedule: "0 8,20 * * *"
+    params:
+      search_query: "cat:cs.CV"
+      max_results: 50
+      sortBy: "submittedDate"
+      sortOrder: "descending"
+
+  - source_id: "36kr_tech"
+    name: "36kr 科技新闻"
+    type: "rss"
+    provider: "36kr"
+    endpoint: "https://36kr.com/feed"
+    enabled: true
+    schedule: "0 9,12,18 * * *"
+
+# 检测规则
+detection_rules:
+  - rule_id: "star_surge"
+    name: "Star数量异常增长"
+    description: "7天内Star增长超过阈值"
+    enabled: true
+    metric: "stars_growth_7d"
+    threshold:
+      high: 0.5
+      medium: 0.3
+      low: 0.1
+    filters:
+      min_stars: 800
+      min_stars_growth: 100
+
+  - rule_id: "paper_burst"
+    name: "论文激增"
+    description: "自动驾驶相关论文突然增多"
+    enabled: true
+    threshold:
+      high: 20
+      medium: 10
+    keywords:
+      - "autonomous driving"
+      - "self-driving"
+      - "ADAS"
+      - "sensor fusion"
+      - "LiDAR"
+      - "路径规划"
+      - "motion planning"
+      - "object detection"
+      - "waymo"
+      - "小马智行"
+      - "文远知行"
+      - "元戎启行"
+
+  - rule_id: "funding_news"
+    name: "融资新闻"
+    description: "自动驾驶融资事件"
+    enabled: true
+    keywords:
+      - "自动驾驶"
+      - "无人驾驶"
+      - "融资"
+      - "估值"
+      - "路测牌照"
+      - "Robotaxi"
+      - "干线物流"
+    priority: "high"
+
+# 关键词过滤
+keywords:
+  include:
+    - "自动驾驶"
+    - "无人驾驶"
+    - "智能驾驶"
+    - "ADAS"
+    - "Robotaxi"
+    - "autonomous driving"
+    - "self-driving"
+    - "waymo"
+    - "小马智行"
+    - "文远知行"
+    - "元戎启行"
+    - "禾多科技"
+    - "AutoX"
+    - "Momenta"
+    - "图森未来"
+    - "激光雷达"
+    - "LiDAR"
+  exclude:
+    - "恶意"
+    - "虚假"
+    - "诈骗"
+
+correlation_rules:
+  - rule_id: "regulation_approval"
+    trigger: "funding_news"
+    meaning: "政策开放+资本加速，行业拐点临近"

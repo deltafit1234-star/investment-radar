@@ -404,12 +404,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--track", default="ai_llm")
     parser.add_argument("--skip-notification", action="store_true")
+    parser.add_argument("--weekly-report", action="store_true", help="生成周报而非日报")
+    parser.add_argument("--week-start", default=None, help="周起始日期 YYYY-MM-DD")
     args = parser.parse_args()
 
     setup()
 
     from src.core.config import get_config
     config = get_config()
+
+    # 周报模式：读取历史信号，生成周报
+    if args.weekly_report:
+        return generate_weekly_report(config, args.week_start)
 
     # 1. 采集
     github_data = run_github(config)
@@ -431,6 +437,48 @@ def main():
     # 合并
     all_signals = enriched_stars + other_alerts
 
+    # 存 DB（用于后续周报生成）+ 去重
+    try:
+        from src.core.database import get_db
+        db = get_db()
+        saved = 0
+        skipped = 0
+        for sig in all_signals:
+            title = (sig.get("full_name") or sig.get("title") or "")[:200]
+            signal_type = sig.get("type", "unknown") or "unknown"
+
+            # 去重检查：7天内同赛道+同类型+相似标题则跳过
+            if title:
+                dup = db.is_duplicate_signal(
+                    track_id="ai_llm",
+                    signal_type=signal_type,
+                    title=title,
+                    days=7,
+                    similarity_threshold=0.8,
+                )
+                if dup:
+                    logger.debug(f"  跳过重复信号: {title[:40]}...")
+                    skipped += 1
+                    continue
+
+            try:
+                db.add_signal({
+                    "track_id": "ai_llm",
+                    "source_id": signal_type,
+                    "signal_type": signal_type,
+                    "title": title,
+                    "content": sig.get("content") or sig.get("summary", ""),
+                    "raw_data": sig,
+                    "priority": sig.get("priority", "low"),
+                    "meaning": sig.get("meaning", ""),
+                })
+                saved += 1
+            except Exception:
+                pass
+        logger.info(f"  信号已存库: {saved} 条, 跳过重复: {skipped} 条")
+    except Exception as e:
+        logger.warning(f"  存DB异常: {e}")
+
     # 5. 推送
     if args.skip_notification:
         logger.info("[跳过] 推送通知（--skip-notification）")
@@ -445,6 +493,48 @@ def main():
         f"告警:{len(all_signals)}个"
     )
     return 0 if notify_ok else 1
+
+
+def generate_weekly_report(config, week_start: str = None):
+    """生成周报"""
+    from src.分析.weekly_report import WeeklyReportGenerator
+    from src.core.database import get_db
+
+    logger.info("[周报] 生成中...")
+
+    db = get_db()
+    signals = db.get_signals(track_id="ai_llm", limit=200)
+
+    # 过滤本周信号
+    from datetime import datetime, timedelta
+    if week_start:
+        start_date = datetime.strptime(week_start, "%Y-%m-%d")
+    else:
+        today = datetime.now()
+        start_date = today - timedelta(days=today.weekday())
+
+    week_signals = [
+        s.to_dict() for s in signals
+        if s.created_at and s.created_at.replace(tzinfo=None) >= start_date.replace(tzinfo=None)
+    ]
+
+    logger.info(f"  本周信号数: {len(week_signals)}")
+
+    # 生成报告
+    generator = WeeklyReportGenerator(llm_config=config.llm_config)
+    report = generator.generate(week_signals, week_start=week_start)
+
+    print("\n" + "=" * 60)
+    print(report)
+    print("=" * 60)
+
+    # 保存到文件
+    output_path = project_root / "data" / "weekly_report.txt"
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(report)
+    logger.info(f"  周报已保存: {output_path}")
+
+    return 0
 
 
 if __name__ == "__main__":

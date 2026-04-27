@@ -317,6 +317,106 @@ class Database:
         finally:
             session.close()
 
+    # ─── 信号去重 ──────────────────────────────────────────────
+    def is_duplicate_signal(
+        self,
+        track_id: str,
+        signal_type: str,
+        title: str,
+        days: int = 7,
+        similarity_threshold: float = 0.8,
+    ) -> Optional[Signal]:
+        """
+        检查是否存在重复信号。
+        条件：同赛道 + 同类型 + 标题相似度 > threshold
+        返回已存在的信号，或 None（不重复）
+        """
+        if not title:
+            return None
+
+        from datetime import timedelta
+        import re
+
+        session = self.get_session()
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            candidates = (
+                session.query(Signal)
+                .filter(
+                    Signal.track_id == track_id,
+                    Signal.signal_type == signal_type,
+                    Signal.created_at >= cutoff,
+                )
+                .all()
+            )
+
+            title_norm = self._normalize_text(title)
+            for sig in candidates:
+                if not sig.title:
+                    continue
+                sim = self._text_similarity(title_norm, self._normalize_text(sig.title))
+                if sim >= similarity_threshold:
+                    return sig
+            return None
+        finally:
+            session.close()
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """标准化文本：小写+去除标点"""
+        import re
+        text = text.lower().strip()
+        text = re.sub(r"[^\w\u4e00-\u9fff]", "", text)  # 保留字母数字中文
+        text = re.sub(r"\s+", "", text)
+        return text
+
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """简单编辑距离相似度"""
+        if not a or not b:
+            return 0.0
+        if a == b:
+            return 1.0
+        # Jaccard: 字符集合交集/并集
+        set_a, set_b = set(a), set(b)
+        intersection = len(set_a & set_b)
+        union = len(set_a | set_b)
+        return intersection / union if union > 0 else 0.0
+
+    def get_signals_after(self, signal_id: int, track_id: str = None, limit: int = 100) -> List[Signal]:
+        """获取指定ID之后的信号（用于SSE增量推送）"""
+        session = self.get_session()
+        try:
+            query = session.query(Signal).filter(Signal.id > signal_id)
+            if track_id:
+                query = query.filter(Signal.track_id == track_id)
+            return query.order_by(Signal.id.asc()).limit(limit).all()
+        finally:
+            session.close()
+
+    def get_latest_signal_id(self, track_id: str = None) -> int:
+        """获取最新信号的ID（用于SSE初始last_id）"""
+        session = self.get_session()
+        try:
+            query = session.query(Signal)
+            if track_id:
+                query = query.filter(Signal.track_id == track_id)
+            latest = query.order_by(Signal.id.desc()).first()
+            return latest.id if latest else 0
+        finally:
+            session.close()
+
+    def get_recent_duplicates(
+        self,
+        track_id: str,
+        signal_type: str,
+        title: str,
+        days: int = 7,
+    ) -> List[Signal]:
+        """获取所有相似信号（用于展示/调试）"""
+        dup = self.is_duplicate_signal(track_id, signal_type, title, days)
+        return [dup] if dup else []
+
 
 # 全局数据库实例
 _db: Optional[Database] = None

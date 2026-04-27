@@ -1,0 +1,120 @@
+# 人形机器人 - 赛道配置
+
+track_id: "humanoid_robot"
+track_name: "人形机器人"
+category: "P1"
+enabled: true
+
+# 数据源配置
+sources:
+  - source_id: "github_trending"
+    name: "GitHub Trending"
+    type: "api"
+    provider: "github"
+    endpoint: "/search/repositories"
+    enabled: true
+    schedule: "0 9 * * *"
+    params:
+      q: "language:python created:>{date_7d}"
+      sort: "stars"
+      order: "desc"
+      per_page: 25
+
+  - source_id: "arxiv_robotics"
+    name: "arXiv Robotics"
+    type: "api"
+    provider: "arxiv"
+    endpoint: "http://export.arxiv.org/api/query"
+    enabled: true
+    schedule: "0 8,20 * * *"
+    params:
+      search_query: "cat:cs.RO"
+      max_results: 30
+      sortBy: "submittedDate"
+      sortOrder: "descending"
+
+  - source_id: "36kr_tech"
+    name: "36kr 科技新闻"
+    type: "rss"
+    provider: "36kr"
+    endpoint: "https://36kr.com/feed"
+    enabled: true
+    schedule: "0 9,12,18 * * *"
+
+# 检测规则
+detection_rules:
+  - rule_id: "star_surge"
+    name: "Star数量异常增长"
+    description: "7天内Star增长超过阈值"
+    enabled: true
+    metric: "stars_growth_7d"
+    threshold:
+      high: 0.5
+      medium: 0.3
+      low: 0.1
+    filters:
+      min_stars: 500
+      min_stars_growth: 80
+
+  - rule_id: "paper_burst"
+    name: "论文激增"
+    description: "机器人领域论文突然增多"
+    enabled: true
+    threshold:
+      high: 15
+      medium: 8
+    keywords:
+      - "humanoid"
+      - "bipedal"
+      - "robot"
+      - "locomotion"
+      - "manipulation"
+      - "Boston Dynamics"
+      - "Figure"
+      - "Tesla Optimus"
+      - "宇树"
+      - "智元"
+      - "逐际动力"
+
+  - rule_id: "funding_news"
+    name: "融资新闻"
+    description: "人形机器人融资事件"
+    enabled: true
+    keywords:
+      - "人形机器人"
+      - "机器人融资"
+      - "机械臂"
+      - "双足机器人"
+      - "灵巧手"
+      - "具身智能"
+    priority: "high"
+
+# 关键词过滤
+keywords:
+  include:
+    - "人形机器人"
+    - "具身智能"
+    - "双足机器人"
+    - "机械臂"
+    - "灵巧手"
+    - "机器人"
+    - "robot"
+    - "humanoid"
+    - "bipedal"
+    - "Boston Dynamics"
+    - "Figure AI"
+    - "Tesla Optimus"
+    - "宇树科技"
+    - "智元机器人"
+    - "逐际动力"
+    - "傅利叶智能"
+  exclude:
+    - "恶意"
+    - "虚假"
+    - "诈骗"
+
+# 关联分析规则
+correlation_rules:
+  - rule_id: "vc_entry"
+    trigger: "funding_news"
+    meaning: "VC入场标志行业进入快速发展期"

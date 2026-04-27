@@ -1,0 +1,121 @@
+# 半导体/芯片 - 赛道配置
+
+track_id: "semiconductor"
+track_name: "半导体/芯片"
+category: "P1"
+enabled: true
+
+# 数据源配置
+sources:
+  - source_id: "github_trending"
+    name: "GitHub Trending"
+    type: "api"
+    provider: "github"
+    endpoint: "/search/repositories"
+    enabled: true
+    schedule: "0 9 * * *"
+    params:
+      q: "language:python created:>{date_7d}"
+      sort: "stars"
+      order: "desc"
+      per_page: 25
+
+  - source_id: "arxiv_ee"
+    name: "arXiv 硬件/芯片"
+    type: "api"
+    provider: "arxiv"
+    endpoint: "http://export.arxiv.org/api/query"
+    enabled: true
+    schedule: "0 8,20 * * *"
+    params:
+      search_query: "cat:cs.AR OR cat:cs.CE"
+      max_results: 30
+      sortBy: "submittedDate"
+      sortOrder: "descending"
+
+  - source_id: "36kr_tech"
+    name: "36kr 科技新闻"
+    type: "rss"
+    provider: "36kr"
+    endpoint: "https://36kr.com/feed"
+    enabled: true
+    schedule: "0 9,12,18 * * *"
+
+# 检测规则
+detection_rules:
+  - rule_id: "star_surge"
+    name: "Star数量异常增长"
+    description: "7天内Star增长超过阈值"
+    enabled: true
+    metric: "stars_growth_7d"
+    threshold:
+      high: 0.5
+      medium: 0.3
+      low: 0.1
+    filters:
+      min_stars: 500
+      min_stars_growth: 80
+
+  - rule_id: "paper_burst"
+    name: "论文激增"
+    description: "芯片/硬件相关论文突然增多"
+    enabled: true
+    threshold:
+      high: 15
+      medium: 8
+    keywords:
+      - "RISC-V"
+      - "chip design"
+      - "GPU architecture"
+      - "CPU"
+      - "AI chip"
+      - "NPU"
+      - "TPU"
+      - "半导体"
+      - "光刻"
+      - "先进封装"
+
+  - rule_id: "funding_news"
+    name: "融资新闻"
+    description: "半导体/芯片融资事件"
+    enabled: true
+    keywords:
+      - "半导体"
+      - "芯片融资"
+      - "GPU"
+      - "RISC-V"
+      - "晶圆厂"
+      - "封装测试"
+      - "碳化硅"
+      - "氮化镓"
+    priority: "high"
+
+# 关键词过滤
+keywords:
+  include:
+    - "半导体"
+    - "芯片"
+    - "GPU"
+    - "RISC-V"
+    - "CPU"
+    - "AI芯片"
+    - "NPU"
+    - "TPU"
+    - "晶圆"
+    - "光刻机"
+    - "先进封装"
+    - "Chiplet"
+    - "HBM"
+    - "芯粒"
+    - "集成电路"
+    - "semiconductor"
+    - "chip"
+  exclude:
+    - "恶意"
+    - "虚假"
+    - "诈骗"
+
+correlation_rules:
+  - rule_id: "export_control"
+    trigger: "funding_news"
+    meaning: "出口管制加速国产替代，半导体投资窗口期"
