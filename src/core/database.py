@@ -21,7 +21,7 @@ Base = declarative_base()
 class Signal(Base):
     """信号表"""
     __tablename__ = "signals"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     track_id = Column(String(50), index=True)           # 赛道ID
     source_id = Column(String(50))                      # 数据源ID
@@ -32,13 +32,18 @@ class Signal(Base):
     priority = Column(String(20), default="low")       # high/medium/low
     keywords = Column(JSON)                             # 匹配的关键词
     meaning = Column(Text)                              # 含义解读
-    tenant_ids = Column(JSON)                           # 需要通知的租户ID列表
+    tenant_ids = Column(JSON)                           # 需要通知的租户ID列表（所有订阅该赛道的租户）
     is_read = Column(Boolean, default=False)           # 是否已读
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
+
+    # Premium 深度分析（高级服务）
+    analysis_premium = Column(JSON, nullable=True)     # Premium租户深度分析
+    ad_space = Column(Text, nullable=True)              # 初级租户广告位文案
+    has_premium_content = Column(Boolean, default=False)
+
+    def to_dict(self, tenant_plan: str = "basic") -> Dict[str, Any]:
+        result = {
             "id": self.id,
             "track_id": self.track_id,
             "source_id": self.source_id,
@@ -48,8 +53,100 @@ class Signal(Base):
             "priority": self.priority,
             "keywords": self.keywords,
             "meaning": self.meaning,
+            "tenant_ids": self.tenant_ids,
             "is_read": self.is_read,
+            "has_premium_content": self.has_premium_content,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+        if tenant_plan == "premium" and self.analysis_premium:
+            result["analysis_premium"] = self.analysis_premium
+        elif self.has_premium_content:
+            result["ad_space"] = self.ad_space or "🔒 升级高级版解锁深度分析"
+        return result
+
+
+class Tenant(Base):
+    """租户表"""
+    __tablename__ = "tenants"
+
+    id = Column(String(50), primary_key=True)           # tenant_001
+    name = Column(String(200), nullable=False)           # "XX科技基金"
+    plan = Column(String(20), default="basic")          # basic / premium
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "plan": self.plan,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class TenantSubscription(Base):
+    """租户赛道订阅表"""
+    __tablename__ = "tenant_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(50), nullable=False, index=True)
+    track_id = Column(String(50), nullable=False)
+    sensitivity = Column(String(20), default="medium")  # high / medium / low
+    keywords_append = Column(JSON, nullable=True)       # 租户追加关键词（append-only）
+    keywords_exclude = Column(JSON, nullable=True)      # 租户排除关键词
+    plan = Column(String(20), default="basic")          # basic / premium（订阅粒度）
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_tenant_track', 'tenant_id', 'track_id', unique=True),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "track_id": self.track_id,
+            "sensitivity": self.sensitivity,
+            "keywords_append": self.keywords_append or [],
+            "keywords_exclude": self.keywords_exclude or [],
+            "plan": self.plan,
+            "enabled": self.enabled,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class TenantNotificationPref(Base):
+    """租户推送配置表"""
+    __tablename__ = "tenant_notification_prefs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(50), nullable=False, unique=True, index=True)
+    wechat_target = Column(String(200), nullable=True)  # 微信群 chat_id 或 webhook
+    feishu_webhook = Column(String(500), nullable=True)  # 飞书 webhook（预留）
+    email = Column(String(200), nullable=True)           # 邮件地址（预留）
+    daily_brief_time = Column(String(10), default="08:30")
+    real_time_alert_enabled = Column(Boolean, default=True)
+    real_time_threshold = Column(String(20), default="medium")  # 触发即时推送的最低优先级
+    weekly_report_enabled = Column(Boolean, default=False)
+    weekly_report_day = Column(String(10), default="monday")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "wechat_target": self.wechat_target,
+            "feishu_webhook": self.feishu_webhook,
+            "email": self.email,
+            "daily_brief_time": self.daily_brief_time,
+            "real_time_alert_enabled": self.real_time_alert_enabled,
+            "real_time_threshold": self.real_time_threshold,
+            "weekly_report_enabled": self.weekly_report_enabled,
+            "weekly_report_day": self.weekly_report_day,
         }
 
 
@@ -75,6 +172,41 @@ class Alert(Base):
             "status": self.status,
             "sent_at": self.sent_at.isoformat() if self.sent_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class TrendingArchive(Base):
+    """GitHub Trending 每日归档表"""
+    __tablename__ = "trending_archive"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(100))
+    repo = Column(String(100))
+    stars = Column(Integer)
+    rank = Column(Integer)          # 当天排名
+    daily_stars_gained = Column(Integer, nullable=True)  # 当天增长（估算）
+    description = Column(Text, nullable=True)
+    language = Column(String(50), nullable=True)
+    archive_date = Column(String(10))  # YYYY-MM-DD 格式
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_trending_archive_date', 'archive_date'),
+        Index('idx_trending_archive_repo_date', 'owner', 'repo', 'archive_date'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "owner": self.owner,
+            "repo": self.repo,
+            "stars": self.stars,
+            "rank": self.rank,
+            "daily_stars_gained": self.daily_stars_gained,
+            "description": self.description,
+            "language": self.language,
+            "archive_date": self.archive_date,
+            "fetched_at": self.fetched_at.isoformat() if self.fetched_at else None,
         }
 
 
@@ -278,6 +410,114 @@ class Database:
         finally:
             session.close()
 
+    def save_trending_archive(self, repos: List[Dict[str, Any]], archive_date: str = None) -> int:
+        """
+        批量保存每日 Trending 归档
+
+        Args:
+            repos: GitHub Trending 仓库列表（按排名排序）
+            archive_date: 归档日期，默认今天
+
+        Returns:
+            保存的记录数
+        """
+        if not archive_date:
+            archive_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+        session = self.get_session()
+        saved = 0
+        try:
+            for i, repo in enumerate(repos):
+                full_name = repo.get("full_name", "")
+                if "/" not in full_name:
+                    continue
+                owner, repo_name = full_name.split("/", 1)
+
+                # 获取昨天的快照估算日增长
+                prev = self._get_stars_at_date(session, owner, repo_name, archive_date)
+                daily_gained = None
+                if prev is not None:
+                    daily_gained = repo.get("stars", 0) - prev
+
+                record = TrendingArchive(
+                    owner=owner,
+                    repo=repo_name,
+                    stars=repo.get("stars", 0),
+                    rank=i + 1,
+                    daily_stars_gained=daily_gained,
+                    description=repo.get("description", ""),
+                    language=repo.get("language", ""),
+                    archive_date=archive_date,
+                )
+                session.add(record)
+                saved += 1
+
+            session.commit()
+            logger.info(f"Trending 归档已保存: {archive_date} - {saved} 条")
+            return saved
+        except Exception as e:
+            session.rollback()
+            logger.error(f"保存 Trending 归档失败: {e}")
+            raise
+        finally:
+            session.close()
+
+    def _get_stars_at_date(self, session: Session, owner: str, repo: str, before_date: str) -> Optional[int]:
+        """查询指定日期之前的最近一次 star 数"""
+        from datetime import datetime as dt
+        try:
+            date_cutoff = dt.strptime(before_date, "%Y-%m-%d")
+            record = (
+                session.query(StarHistory)
+                .filter(
+                    StarHistory.owner == owner,
+                    StarHistory.repo == repo,
+                    StarHistory.fetched_at < date_cutoff
+                )
+                .order_by(StarHistory.fetched_at.desc())
+                .first()
+            )
+            return record.stars if record else None
+        except Exception:
+            return None
+
+    def get_trending_archive(
+        self,
+        archive_date: str,
+        limit: int = 100
+    ) -> List[TrendingArchive]:
+        """获取指定日期的 Trending 归档"""
+        session = self.get_session()
+        try:
+            return (
+                session.query(TrendingArchive)
+                .filter(TrendingArchive.archive_date == archive_date)
+                .order_by(TrendingArchive.rank.asc())
+                .limit(limit)
+                .all()
+            )
+        finally:
+            session.close()
+
+    def get_repo_trend_days(self, owner: str, repo: str, days: int = 30) -> int:
+        """查询某项目出现在 Trending 的天数（近 N 天）"""
+        from datetime import timedelta
+        session = self.get_session()
+        try:
+            cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+            count = (
+                session.query(TrendingArchive)
+                .filter(
+                    TrendingArchive.owner == owner,
+                    TrendingArchive.repo == repo,
+                    TrendingArchive.archive_date >= cutoff
+                )
+                .count()
+            )
+            return count
+        finally:
+            session.close()
+
     def get_previous_stars(self, owner: str, repo: str, hours: int = 24) -> Optional[StarHistory]:
         """获取最近一次 star 快照"""
         from datetime import timedelta
@@ -416,6 +656,212 @@ class Database:
         """获取所有相似信号（用于展示/调试）"""
         dup = self.is_duplicate_signal(track_id, signal_type, title, days)
         return [dup] if dup else []
+
+
+    # ─── 多租户：Tenant ─────────────────────────────────────────
+    def upsert_tenant(self, tenant_id: str, name: str, plan: str = "basic") -> Tenant:
+        """创建或更新租户"""
+        session = self.get_session()
+        try:
+            tenant = session.query(Tenant).filter(Tenant.id == tenant_id).first()
+            if tenant:
+                tenant.name = name
+                tenant.plan = plan
+            else:
+                tenant = Tenant(id=tenant_id, name=name, plan=plan)
+                session.add(tenant)
+            session.commit()
+            session.refresh(tenant)
+            return tenant
+        finally:
+            session.close()
+
+    def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
+        session = self.get_session()
+        try:
+            return session.query(Tenant).filter(Tenant.id == tenant_id).first()
+        finally:
+            session.close()
+
+    def get_all_active_tenants(self) -> List[Tenant]:
+        session = self.get_session()
+        try:
+            return session.query(Tenant).filter(Tenant.is_active == True).all()
+        finally:
+            session.close()
+
+    # ─── 多租户：TenantSubscription ─────────────────────────────
+    def upsert_subscription(
+        self,
+        tenant_id: str,
+        track_id: str,
+        sensitivity: str = "medium",
+        keywords_append: List[str] = None,
+        keywords_exclude: List[str] = None,
+        plan: str = "basic",
+        enabled: bool = True,
+    ) -> TenantSubscription:
+        """创建或更新租户订阅"""
+        session = self.get_session()
+        try:
+            sub = (
+                session.query(TenantSubscription)
+                .filter(TenantSubscription.tenant_id == tenant_id, TenantSubscription.track_id == track_id)
+                .first()
+            )
+            if sub:
+                sub.sensitivity = sensitivity
+                sub.keywords_append = keywords_append
+                sub.keywords_exclude = keywords_exclude
+                sub.plan = plan
+                sub.enabled = enabled
+            else:
+                sub = TenantSubscription(
+                    tenant_id=tenant_id,
+                    track_id=track_id,
+                    sensitivity=sensitivity,
+                    keywords_append=keywords_append,
+                    keywords_exclude=keywords_exclude,
+                    plan=plan,
+                    enabled=enabled,
+                )
+                session.add(sub)
+            session.commit()
+            session.refresh(sub)
+            return sub
+        finally:
+            session.close()
+
+    def get_subscription(self, tenant_id: str, track_id: str) -> Optional[TenantSubscription]:
+        session = self.get_session()
+        try:
+            return (
+                session.query(TenantSubscription)
+                .filter(TenantSubscription.tenant_id == tenant_id, TenantSubscription.track_id == track_id)
+                .first()
+            )
+        finally:
+            session.close()
+
+    def get_tenant_subscriptions(self, tenant_id: str, enabled_only: bool = True) -> List[TenantSubscription]:
+        session = self.get_session()
+        try:
+            query = session.query(TenantSubscription).filter(TenantSubscription.tenant_id == tenant_id)
+            if enabled_only:
+                query = query.filter(TenantSubscription.enabled == True)
+            return query.all()
+        finally:
+            session.close()
+
+    def get_tenants_by_track(self, track_id: str) -> List[str]:
+        """获取订阅了指定赛道的所有租户ID"""
+        session = self.get_session()
+        try:
+            subs = (
+                session.query(TenantSubscription)
+                .filter(TenantSubscription.track_id == track_id, TenantSubscription.enabled == True)
+                .all()
+            )
+            return list(set(sub.tenant_id for sub in subs))
+        finally:
+            session.close()
+
+    def delete_subscription(self, tenant_id: str, track_id: str) -> bool:
+        session = self.get_session()
+        try:
+            sub = (
+                session.query(TenantSubscription)
+                .filter(TenantSubscription.tenant_id == tenant_id, TenantSubscription.track_id == track_id)
+                .first()
+            )
+            if sub:
+                session.delete(sub)
+                session.commit()
+                return True
+            return False
+        finally:
+            session.close()
+
+    # ─── 多租户：TenantNotificationPref ─────────────────────────
+    def upsert_notification_pref(
+        self,
+        tenant_id: str,
+        wechat_target: str = None,
+        feishu_webhook: str = None,
+        email: str = None,
+        daily_brief_time: str = "08:30",
+        real_time_alert_enabled: bool = True,
+        real_time_threshold: str = "medium",
+        weekly_report_enabled: bool = False,
+        weekly_report_day: str = "monday",
+    ) -> TenantNotificationPref:
+        """创建或更新租户推送配置"""
+        session = self.get_session()
+        try:
+            pref = session.query(TenantNotificationPref).filter(TenantNotificationPref.tenant_id == tenant_id).first()
+            if pref:
+                pref.wechat_target = wechat_target or pref.wechat_target
+                pref.feishu_webhook = feishu_webhook or pref.feishu_webhook
+                pref.email = email or pref.email
+                pref.daily_brief_time = daily_brief_time
+                pref.real_time_alert_enabled = real_time_alert_enabled
+                pref.real_time_threshold = real_time_threshold
+                pref.weekly_report_enabled = weekly_report_enabled
+                pref.weekly_report_day = weekly_report_day
+            else:
+                pref = TenantNotificationPref(
+                    tenant_id=tenant_id,
+                    wechat_target=wechat_target,
+                    feishu_webhook=feishu_webhook,
+                    email=email,
+                    daily_brief_time=daily_brief_time,
+                    real_time_alert_enabled=real_time_alert_enabled,
+                    real_time_threshold=real_time_threshold,
+                    weekly_report_enabled=weekly_report_enabled,
+                    weekly_report_day=weekly_report_day,
+                )
+                session.add(pref)
+            session.commit()
+            session.refresh(pref)
+            return pref
+        finally:
+            session.close()
+
+    def get_notification_pref(self, tenant_id: str) -> Optional[TenantNotificationPref]:
+        session = self.get_session()
+        try:
+            return session.query(TenantNotificationPref).filter(TenantNotificationPref.tenant_id == tenant_id).first()
+        finally:
+            session.close()
+
+    # ─── 多租户：按租户获取信号 ─────────────────────────────────
+    def get_signals_for_tenant(
+        self,
+        tenant_id: str,
+        track_id: str = None,
+        priority: str = None,
+        limit: int = 100,
+        offset: int = 0,
+        tenant_plan: str = "basic",
+    ) -> List[Dict[str, Any]]:
+        """获取属于指定租户的信号（Signal.tenant_ids 包含该租户ID）"""
+        session = self.get_session()
+        try:
+            query = session.query(Signal)
+            if track_id:
+                query = query.filter(Signal.track_id == track_id)
+            if priority:
+                query = query.filter(Signal.priority == priority)
+            query = query.order_by(Signal.created_at.desc())
+            signals = query.limit(limit).offset(offset).all()
+            # 过滤出包含该 tenant_id 的信号
+            result = []
+            for sig in signals:
+                if sig.tenant_ids and tenant_id in sig.tenant_ids:
+                    result.append(sig.to_dict(tenant_plan=tenant_plan))
+            return result
+        finally:
+            session.close()
 
 
 # 全局数据库实例

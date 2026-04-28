@@ -11,6 +11,7 @@ import json
 import random
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # 加载 .env 环境变量
 env_path = Path(__file__).parent.parent / ".env"
@@ -88,6 +89,15 @@ def run_github(config) -> list:
 
         if saved_count:
             logger.info(f"  Star 历史已记录: {saved_count} 个项目")
+
+        # 保存每日 Trending 归档（包含完整排名）
+        archive_date = datetime.utcnow().strftime("%Y-%m-%d")
+        try:
+            archive_count = db.save_trending_archive(result.data, archive_date)
+            logger.info(f"  Trending 归档已保存: {archive_date} - {archive_count} 条")
+        except Exception as e:
+            logger.warning(f"  Trending 归档保存失败: {e}")
+
         return result.data
 
     except Exception as e:
@@ -98,18 +108,28 @@ def run_github(config) -> list:
 # ═══════════════════════════════════════════════════════
 # 数据源 2: arXiv 论文
 # ═══════════════════════════════════════════════════════
-def run_arxiv(config) -> list:
-    """采集 arXiv 论文"""
-    logger.info("[2/6] 采集 arXiv 论文...")
-    try:
-        from src.采集.arxiv import ArxivCollector
+def run_arxiv(config, track_id: str = "ai_llm") -> list:
+    """采集 arXiv 论文（混合模式：优先 API，429 时自动降级到 RSS）
 
-        source = config.get_source_config("ai_llm", "arxiv_cs_ai")
+    Args:
+        config: 全局配置对象
+        track_id: 赛道ID，用于获取对应的 arXiv 分类配置
+    """
+    logger.info(f"[2/6] 采集 arXiv 论文（{track_id}，混合模式）...")
+    try:
+        # 使用混合采集器：API 优先，失败时自动降级到 RSS
+        from src.采集.arxiv_rss import ArxivHybridCollector
+
+        # 动态获取该赛道的 arXiv source
+        source = config.get_source_config(track_id, f"{track_id}_arxiv")
         if not source:
-            logger.warning("  未找到 arXiv 配置，跳过")
+            # 降级：尝试通用 arxiv_cs_ai
+            source = config.get_source_config(track_id, "arxiv_cs_ai")
+        if not source:
+            logger.warning(f"  未找到 {track_id} 的 arXiv 配置，跳过")
             return []
 
-        collector = ArxivCollector(source)
+        collector = ArxivHybridCollector(source)
         result = collector.run()
 
         if result.success:
@@ -126,9 +146,14 @@ def run_arxiv(config) -> list:
 # ═══════════════════════════════════════════════════════
 # 数据源 3: 36kr 新闻
 # ═══════════════════════════════════════════════════════
-def run_36kr(config) -> list:
-    """采集 36kr 科技新闻"""
-    logger.info("[3/6] 采集 36kr 科技新闻...")
+def run_36kr(config, track_id: str = "ai_llm") -> list:
+    """采集 36kr 科技新闻（按赛道关键词过滤）
+
+    Args:
+        config: 全局配置对象
+        track_id: 赛道ID
+    """
+    logger.info(f"[3/6] 采集 36kr 科技新闻（{track_id}）...")
     try:
         from src.采集.news_36kr import News36krCollector
 
@@ -194,19 +219,42 @@ def run_detection(
     github_data: list,
     arxiv_data: list,
     news_data: list,
-    config
+    config,
+    track_id: str = "ai_llm"
 ) -> list:
-    """信号检测"""
+    """信号检测（支持多赛道）
+
+    Args:
+        github_data: GitHub Trending 数据（所有赛道共用）
+        arxiv_data: 当前赛道的 arXiv 论文
+        news_data: 当前赛道的新闻数据
+        config: 全局配置
+        track_id: 赛道ID，用于加载赛道专属规则
+    """
     logger.info("[5/6] 信号检测...")
     try:
         from src.检测.star_detector import StarSurgeDetector
         from src.检测.paper_detector import PaperBurstDetector
         from src.core.database import get_db
 
-        rules = config.get_detection_rules("ai_llm")
+        # ── 辅助函数 ────────────────────────────────
+        def _extract_company_name(title: str) -> str:
+            """从标题提取公司名（取前15字作为去重键）"""
+            return title[:15].strip(":-：· ")
+
+        def _extract_round_type(text: str) -> str:
+            """提取融资轮次"""
+            for kw in ["天使轮", "A轮", "B轮", "C轮", "D轮", "Pre-A", "Pre-B"]:
+                if kw in text:
+                    return kw
+            return "未知轮次"
+        # ─────────────────────────────────────────
+
+        rules = config.get_detection_rules(track_id)
         star_thresholds = {}
         paper_thresholds = {}
-        keywords = []
+        paper_keywords = []
+        funding_keywords_cfg = []
 
         for rule in rules:
             rule_id = rule.get("rule_id")
@@ -214,8 +262,9 @@ def run_detection(
                 star_thresholds = rule.get("threshold", {})
             elif rule_id == "paper_burst":
                 paper_thresholds = rule.get("threshold", {})
+                paper_keywords = rule.get("keywords", [])
             elif rule_id == "funding_news":
-                keywords = rule.get("keywords", [])
+                funding_keywords_cfg = rule.get("keywords", [])
 
         alerts = []
 
@@ -240,18 +289,44 @@ def run_detection(
                 # 无历史时，模拟一个合理增长（仅用于演示）
                 repo_with_history["stars_previous"] = int(stars / random.uniform(1.2, 1.8))
 
+            # 查询 Trending 归档：近 30 天有多少天上榜
+            trend_days = db.get_repo_trend_days(owner, repo_name, days=30)
+            repo_with_history["trend_days"] = trend_days
+
             alert = star_detector.detect(repo_with_history)
             if alert:
+                # 上榜天数 >= 7天 → 可信度高，提升优先级
+                if trend_days >= 7:
+                    alert["priority"] = "high"
+                    alert["consistency_note"] = f"连续上榜 {trend_days} 天，可信信号"
                 alerts.append(alert)
 
-        # ── 论文爆发检测 ────────────────────────────────
-        paper_detector = PaperBurstDetector(thresholds=paper_thresholds)
+        # ── 论文爆发检测（赛道专属关键词）──────────────
+        paper_detector = PaperBurstDetector(
+            thresholds=paper_thresholds,
+            keywords=paper_keywords if paper_keywords else None
+        )
         paper_alerts = paper_detector.batch_detect([{"papers": arxiv_data, "count": len(arxiv_data)}])
         alerts.extend(paper_alerts)
 
-        # ── 融资/热点新闻检测 ──────────────────────────
-        funding_keywords = ["融资", "获投", "B轮", "C轮", "估值", "人民币", "美元", "上市", "IPO", "投资"]
-        ai_keywords = ["大模型", "LLM", "GPT", "Claude", "Llama", "Agent", "多模态", "开源模型", "文心", "通义", "智谱", "Kimi", "ChatGPT"]
+        # ── 融资/热点新闻检测（增强版）───────────────
+        # 通用关键词 + 赛道专属关键词（合并去重）
+        _base_funding = ["融资", "获投", "B轮", "C轮", "估值", "人民币", "美元", "上市", "IPO", "投资", "天使轮", "A轮", "D轮"]
+        _base_ai = ["大模型", "LLM", "GPT", "Claude", "Llama", "Agent", "多模态", "开源模型", "文心", "通义", "智谱", "Kimi", "ChatGPT", "Sora", "GPT-4", "Gemini", "Mistral", "Grok"]
+        # 从 track config 的 funding_news rule 补充赛道专属关键词
+        funding_keywords = list(set(_base_funding + funding_keywords_cfg))
+        ai_keywords = list(set(_base_ai + funding_keywords_cfg))
+        # 知名 VC 白名单——出现在融资新闻中 = 高可信度
+        vc_whitelist = [
+            "红杉", "高瓴", "IDG", "经纬", "真格", "创新工场", "GGV",
+            "SIG", "源码", "线性", "明势", "BAI", "纪源",
+            "腾讯", "阿里", "字节", "小米", "京东", "美团",
+            "深创投", "国投", "招银", "中金", "顺为",
+            "Qiming", "Shunwei", "Hillhouse", "Sequoia", "IDG Capital",
+        ]
+
+        seen_funding = {}  # 去重：{(公司名关键词, 融资轮次): alert}
+        seen_model_news = set()  # 去重：(标题前30字)
 
         for news in news_data:
             title = news.get("title", "")
@@ -261,25 +336,59 @@ def run_detection(
             has_funding = any(k in text for k in funding_keywords)
             has_ai = any(k in text for k in ai_keywords)
 
+            # ── 融资新闻 ──────────────────────────────
             if has_funding and has_ai:
+                # 去重：公司名 + 轮次相同则跳过（保留第一条）
+                # 提取公司名（标题中第一个 AI 相关关键词前的内容）
+                company = _extract_company_name(title)
+                round_type = _extract_round_type(text)
+                dedup_key = (company, round_type)
+                if dedup_key in seen_funding:
+                    logger.debug(f"  跳过重复融资: {title[:40]}...")
+                    continue
+                seen_funding[dedup_key] = True
+
+                # VC 加权：检查是否有知名机构
+                vc_found = [vc for vc in vc_whitelist if vc in text]
+                priority = "high"
+                vc_note = ""
+                if vc_found:
+                    priority = "high"
+                    vc_note = f"【{', '.join(vc_found)} 参投】"
+                elif "亿" in text or "千万" in text:
+                    priority = "medium"  # 有金额但无知名VC
+
                 alerts.append({
                     "type": "funding_news",
                     "full_name": title,
-                    "content": desc[:200],
+                    "content": f"{vc_note}{desc[:200]}".strip(),
                     "url": news.get("url", ""),
                     "published_at": news.get("published_at", ""),
-                    "priority": "high",
-                    "message": f"融资动态: {title}"
+                    "priority": priority,
+                    "message": f"融资动态: {title}",
+                    "vc_found": vc_found,
                 })
-            elif has_ai and ("发布" in text or "开源" in text or "新模型" in text):
+
+            # ── 纯模型动态（无融资）────────────────
+            elif has_ai and ("发布" in text or "开源" in text or "新模型" in text or "重磅" in text):
+                # 去重：标题前30字相同跳过
+                title_key = title[:30]
+                if title_key in seen_model_news:
+                    continue
+                seen_model_news.add(title_key)
+
+                # 知名公司/项目发布 → medium，否则 low
+                notable = any(n in title for n in ["OpenAI", "Anthropic", "Google", "Meta", "DeepSeek", "Mistral", "Llama", "通义", "文心", "智谱", "Kimi", "ChatGPT"])
+                priority = "medium" if notable else "low"
+
                 alerts.append({
                     "type": "model_news",
                     "full_name": title,
                     "content": desc[:200],
                     "url": news.get("url", ""),
                     "published_at": news.get("published_at", ""),
-                    "priority": "medium",
-                    "message": f"AI 模型动态: {title}"
+                    "priority": priority,
+                    "message": f"AI 模型动态: {title}",
                 })
 
         logger.info(f"  检测到 {len(alerts)} 个告警")
@@ -337,9 +446,70 @@ def run_correlation(alerts: list, config) -> list:
         return alerts
 
 
-# ═══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# Premium 深度分析
+# ═══════════════════════════════════════════════════════════════
+def _update_signal_premium_analysis(db, sig: dict, sig_data: dict,
+                                     track_cfg: dict, tenant_ids: list):
+    """
+    检查是否有 Premium 租户订阅了该信号，若有则生成深度分析并更新数据库。
+    """
+    try:
+        from src.core.database import TenantSubscription
+
+        session = db.get_session()
+        try:
+            premium_subs = session.query(TenantSubscription).filter(
+                TenantSubscription.tenant_id.in_(tenant_ids),
+                TenantSubscription.track_id == track_cfg["track_id"],
+                TenantSubscription.plan == "premium",
+                TenantSubscription.enabled == True,
+            ).all()
+
+            has_premium_subscriber = len(premium_subs) > 0
+
+            from src.core.database import Signal
+            signal_record = session.query(Signal).filter(
+                Signal.track_id == sig_data["track_id"],
+                Signal.source_id == sig_data["source_id"],
+                Signal.title == sig_data["title"],
+            ).order_by(Signal.created_at.desc()).first()
+
+            if not signal_record:
+                return
+
+            if not signal_record.has_premium_content:
+                signal_record.ad_space = _generate_ad_space(track_cfg)
+
+            if has_premium_subscriber and not signal_record.analysis_premium:
+                logger.info(f"  [Premium] 深度分析: {sig_data['title'][:40]}")
+                from src.分析.deep_analyzer import DeepAnalyzer
+                analyzer = DeepAnalyzer()
+                enriched = analyzer.analyze(sig, track_cfg)
+                signal_record.analysis_premium = enriched.get("analysis_premium")
+                signal_record.has_premium_content = True
+            elif signal_record.analysis_premium:
+                signal_record.has_premium_content = True
+
+            session.commit()
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"  Premium 分析异常: {e}")
+
+
+def _generate_ad_space(track_cfg: dict) -> str:
+    track_name = track_cfg.get("track_name", track_cfg.get("track_id", ""))
+    return (
+        f"📈 【{track_name}】深度分析仅对 Premium 租户开放\n"
+        f"升级 Premium 获取：投资机会解读 / 竞争格局分析 / 风险提示 / 相关公司\n"
+        f"联系我们升级账号 →"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
 # LLM 丰富化
-# ═══════════════════════════════════════════════════════
+
 def run_enrichment(signals: list, config) -> list:
     """LLM 信号丰富化"""
     logger.info("[LLM] 信号丰富化...")
@@ -357,25 +527,65 @@ def run_enrichment(signals: list, config) -> list:
         return signals
 
 
-# ═══════════════════════════════════════════════════════
-# 推送通知
-# ═══════════════════════════════════════════════════════
-def run_notification(signals: list) -> bool:
-    """推送通知"""
-    logger.info("[推送] 微信通知...")
+# ═══════════════════════════════════════════════════════════════════
+# 推送通知（多租户路由）
+# ═══════════════════════════════════════════════════════════════════
+def run_notification(signals: list, target: Optional[str] = None) -> bool:
+    """
+    推送通知（多租户版本）
+
+    策略：
+    - 有显式 target → 直接发给指定群（现有行为，兼容单租户）
+    - 无 target → 通过 NotificationRouter 按租户配置分群推送
+    """
+    logger.info("[推送] 微信通知（多租户路由）...")
+    try:
+        from src.推送.wechat import WechatNotifier
+        from src.推送.router import NotificationRouter
+
+        # 显式指定了 target → 直接发（单租户兼容）
+        if target:
+            return _send_direct_wechat(signals, target)
+
+        # 多租户路由推送
+        if not signals:
+            # 无信号时，仍尝试通知已订阅租户（发空报告）
+            logger.info("  无信号，跳过多租户推送")
+            return True
+
+        router = NotificationRouter()
+        result = router.route_signals(signals)
+
+        reached = result.get("tenants_reached", 0)
+        details = result.get("details", [])
+        ok_count = sum(1 for d in details if d.get("ok"))
+        logger.info(f"  多租户推送完成: {reached} 个租户, {ok_count}/{len(details)} 成功")
+
+        # 同时保存到 JSON 供 cron 读取
+        output_path = project_root / "data" / "latest_signals.json"
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(signals, f, ensure_ascii=False, indent=2)
+
+        return result.get("success", True)
+
+    except Exception as e:
+        logger.exception(f"  推送异常: {e}")
+        return False
+
+
+def _send_direct_wechat(signals: list, target: str) -> bool:
+    """直接微信推送（单租户兼容模式）"""
     try:
         from src.推送.wechat import WechatNotifier
 
         notifier = WechatNotifier()
-
         if not signals:
             msg = "📭 今日投资雷达\n\n暂无异常信号，继续观察。"
-            notifier.send_message(msg)
-            logger.info("  无信号，发送空报告")
+            notifier.send_message(msg, target=target)
             return True
 
-        # 格式化为每日简报
-        lines = ["📊 投资雷达 - 每日简报", "", f"检测时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
+        report_type = "周报" if "weekly" in str(target) else "简报"
+        lines = [f"📊 投资雷达 - 每日{report_type}", "", f"检测时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
 
         for sig in signals:
             formatted = notifier.format_signal_message(sig)
@@ -383,17 +593,17 @@ def run_notification(signals: list) -> bool:
             lines.append("")
 
         message = "\n".join(lines)
-        notifier.send_message(message)
-        logger.info(f"  推送成功: {len(signals)} 个信号")
+        notifier.send_message(message, target=target)
 
-        # 输出 JSON 供 Hermes cron 读取
+        # 保存 JSON
         output_path = project_root / "data" / "latest_signals.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(signals, f, ensure_ascii=False, indent=2)
 
+        logger.info(f"  推送成功: {len(signals)} 个信号 → {target}")
         return True
     except Exception as e:
-        logger.exception(f"  推送异常: {e}")
+        logger.exception(f"  直接推送异常: {e}")
         return False
 
 
@@ -402,42 +612,72 @@ def run_notification(signals: list) -> bool:
 # ═══════════════════════════════════════════════════════
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--track", default="ai_llm")
+    parser.add_argument("--track", default=None, help="指定运行单个赛道（如 ai_llm），默认运行所有赛道")
     parser.add_argument("--skip-notification", action="store_true")
     parser.add_argument("--weekly-report", action="store_true", help="生成周报而非日报")
     parser.add_argument("--week-start", default=None, help="周起始日期 YYYY-MM-DD")
+    parser.add_argument("--deliver-to", default=None, help="推送目标，如 weixin:chat_id（支持分群推送）")
     args = parser.parse_args()
 
     setup()
 
     from src.core.config import get_config
+    from src.core.track_loader import get_enabled_tracks
     config = get_config()
 
     # 周报模式：读取历史信号，生成周报
     if args.weekly_report:
-        return generate_weekly_report(config, args.week_start)
+        return generate_weekly_report(config, args.week_start, target=args.deliver_to)
 
-    # 1. 采集
-    github_data = run_github(config)
-    arxiv_data = run_arxiv(config)
-    news_data = run_36kr(config)
-    hf_data = run_huggingface(config)
+    # 确定要运行的赛道
+    if args.track:
+        target_tracks = [t for t in get_enabled_tracks() if t["track_id"] == args.track]
+        if not target_tracks:
+            logger.error(f"未找到赛道或未启用: {args.track}")
+            return 1
+    else:
+        target_tracks = get_enabled_tracks()
 
-    # 2. 检测
-    alerts = run_detection(github_data, arxiv_data, news_data, config)
+    logger.info(f"=" * 60)
+    logger.info(f"投资雷达 -  {'单赛道: ' + args.track if args.track else '全赛道模式'} ({len(target_tracks)} 个赛道)")
+    logger.info(f"赛道列表: {[t['track_id'] for t in target_tracks]}")
+    logger.info(f"=" * 60)
 
-    # 3. 关联分析
-    correlated = run_correlation(alerts, config)
+    # 全局数据（所有赛道共用）
+    github_data = run_github(config)  # GitHub trending 只采一次
+    all_signals = []
 
-    # 4. 丰富化（仅 Star 激增走 LLM，减少 token 消耗）
-    star_alerts = [a for a in correlated if a.get("type") == "star_surge"]
-    other_alerts = [a for a in correlated if a.get("type") != "star_surge"]
-    enriched_stars = run_enrichment(star_alerts, config) if star_alerts else []
+    for track_cfg in target_tracks:
+        track_id = track_cfg["track_id"]
+        track_name = track_cfg.get("track_name", track_id)
+        logger.info(f"\n{'='*40}\n  赛道: {track_name} ({track_id})\n{'='*40}")
 
-    # 合并
-    all_signals = enriched_stars + other_alerts
+        # 1. 采集（按赛道）
+        arxiv_data = run_arxiv(config, track_id)
+        news_data = run_36kr(config, track_id)
+        hf_data = []  # HF 在 cron 环境不可达
 
-    # 存 DB（用于后续周报生成）+ 去重
+        # 2. 检测
+        alerts = run_detection(github_data, arxiv_data, news_data, config, track_id)
+
+        # 3. 关联分析
+        correlated = run_correlation(alerts, config)
+
+        # 4. 丰富化（仅 Star 激增走 LLM）
+        star_alerts = [a for a in correlated if a.get("type") == "star_surge"]
+        other_alerts = [a for a in correlated if a.get("type") != "star_surge"]
+        enriched_stars = run_enrichment(star_alerts, config) if star_alerts else []
+        track_signals = enriched_stars + other_alerts
+
+        # 标记赛道归属
+        for sig in track_signals:
+            sig["track_id"] = track_id
+            sig["track_name"] = track_name
+
+        logger.info(f"  赛道 {track_id}: 检测到 {len(track_signals)} 个信号")
+        all_signals.extend(track_signals)
+
+    # ── 全局存库 + 去重 ───────────────────────────
     try:
         from src.core.database import get_db
         db = get_db()
@@ -446,24 +686,26 @@ def main():
         for sig in all_signals:
             title = (sig.get("full_name") or sig.get("title") or "")[:200]
             signal_type = sig.get("type", "unknown") or "unknown"
+            track_id_sig = sig.get("track_id", "unknown")
 
-            # 去重检查：7天内同赛道+同类型+相似标题则跳过
             if title:
                 dup = db.is_duplicate_signal(
-                    track_id="ai_llm",
+                    track_id=track_id_sig,
                     signal_type=signal_type,
                     title=title,
                     days=7,
                     similarity_threshold=0.8,
                 )
                 if dup:
-                    logger.debug(f"  跳过重复信号: {title[:40]}...")
                     skipped += 1
                     continue
 
             try:
-                db.add_signal({
-                    "track_id": "ai_llm",
+                from src.core.tenant_config import TenantConfigLoader
+
+                # 填充 tenant_ids（所有订阅该赛道的活跃租户）
+                sig_data = {
+                    "track_id": track_id_sig,
                     "source_id": signal_type,
                     "signal_type": signal_type,
                     "title": title,
@@ -471,32 +713,48 @@ def main():
                     "raw_data": sig,
                     "priority": sig.get("priority", "low"),
                     "meaning": sig.get("meaning", ""),
-                })
+                }
+                sig_data = TenantConfigLoader.fill_tenant_ids_for_signal(sig_data, track_id_sig)
+                db.add_signal(sig_data)
+
+                # ── Premium 深度分析（仅 Premium 租户订阅的信号）──────────
+                tenant_ids = sig_data.get("tenant_ids", [])
+                if tenant_ids:
+                    _update_signal_premium_analysis(db, sig, sig_data, track_cfg, tenant_ids)
+
+                # 同步回 all_signals 的原始 dict，这样 run_notification 能读到 tenant_ids
+                sig["tenant_ids"] = tenant_ids
                 saved += 1
             except Exception:
                 pass
-        logger.info(f"  信号已存库: {saved} 条, 跳过重复: {skipped} 条")
+        logger.info(f"\n信号已存库: {saved} 条, 跳过重复: {skipped} 条")
     except Exception as e:
         logger.warning(f"  存DB异常: {e}")
 
-    # 5. 推送
+    # ── 推送 ────────────────────────────────────
     if args.skip_notification:
         logger.info("[跳过] 推送通知（--skip-notification）")
         notify_ok = True
     else:
-        notify_ok = run_notification(all_signals)
+        notify_ok = run_notification(all_signals, target=args.deliver_to)
 
     logger.info("=" * 60)
+    total_arxiv = sum(len(run_arxiv(config, t["track_id"]) or []) for t in target_tracks)
     logger.info(
-        f"结果: GitHub:{len(github_data)}条 arXiv:{len(arxiv_data)}篇 "
-        f"36kr:{len(news_data)}条 HF:{len(hf_data)}个 "
+        f"结果: GitHub:{len(github_data)}条 36kr:{sum(1 for s in all_signals)}条 "
         f"告警:{len(all_signals)}个"
     )
     return 0 if notify_ok else 1
 
 
-def generate_weekly_report(config, week_start: str = None):
-    """生成周报"""
+def generate_weekly_report(config, week_start: str = None, target: str = None):
+    """生成周报
+
+    Args:
+        config: 全局配置
+        week_start: 周起始日期 YYYY-MM-DD
+        target: 推送目标，如 weixin:chat_id
+    """
     from src.分析.weekly_report import WeeklyReportGenerator
     from src.core.database import get_db
 
@@ -534,7 +792,12 @@ def generate_weekly_report(config, week_start: str = None):
         f.write(report)
     logger.info(f"  周报已保存: {output_path}")
 
-    return 0
+    # 推送周报（分群推送支持）
+    notify_ok = run_notification(
+        [{"type": "weekly_report", "title": "投资雷达 - 本周周报", "content": report, "priority": "medium"}],
+        target=target,
+    )
+    return 0 if notify_ok else 1
 
 
 if __name__ == "__main__":

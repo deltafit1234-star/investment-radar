@@ -1,79 +1,98 @@
-# 投资雷达 (Investment Radar)
+# 投资雷达 (Investment Radar) — Phase 3 多租户版
 
-AI大模型赛道早期信号检测系统。
+AI大模型赛道早期信号检测系统，支持多租户、多赛道、微信/飞书/邮件分群推送。
 
-## Phase 0 — MVP (已完成)
-- [x] GitHub Trending 采集 (真实 API)
-- [x] arXiv 论文采集 (cs.AI/cs.CL)
-- [x] Star 激增检测
-- [x] LLM 丰富化 (MiniMax M2.7)
-- [x] 微信推送 (stdout 格式)
+## 项目阶段
 
-## Phase 1 — 完整链路 (已完成)
-- [x] **36kr 新闻采集** — RSS feed，AI/融资新闻检测
-- [x] **HuggingFace Models** — API (需网络可达时可用)
-- [x] **Star 历史追踪** — SQLite 存储，24h 对比
-- [x] **关联分析** — Star激增 + 论文爆发 + 新闻 = 高置信度
+| Phase | 状态 | 内容 |
+|-------|------|------|
+| Phase 0 | ✅ 已完成 | 本地最小闭环（GitHub/arXiv/微信推送） |
+| Phase 1 | ✅ 已完成 | 单赛道验证（36kr/HuggingFace/Star历史追踪） |
+| Phase 2 | ✅ 已完成 | 多赛道扩展（人形机器人/自动驾驶/半导体/BCI/新能源） |
+| Phase 3 | ✅ 已完成 | 多租户平台化（数据库/配置/Pipeline/API/Web管理后台） |
+| Phase 4 | 🔄 进行中 | Premium 深度分析高级服务（二期待上线） |
 
-## Phase 2 — 内容丰富化 (已完成)
-- [x] **36kr 文章正文抓取** — BeautifulSoup 解析 HTML 页面
-- [x] **每周报告生成** — MiniMax M2.7 生成结构化周报
-- [x] **arXiv 全文 PDF** — PyMuPDF 提取 PDF 正文
+## 赛道清单
 
-## Phase 3 — Web 界面 + 多赛道 (已完成)
-- [x] **多赛道支持** — 人形机器人/自动驾驶/半导体 独立配置
-- [x] **信号去重** — 7天 Jaccard 相似度 > 80% 自动跳过
-- [x] **Web Dashboard** — FastAPI + HTML + Chart.js
-- [x] **管理后台** — 赛道开关/推送记录/推送统计
-- [x] **实时 SSE** — 数据库轮询，新信号实时推送
-- [x] **arXiv 全文 PDF** — PyMuPDF 提取，最多50页
+| 赛道 ID | 名称 | 数据源 |
+|---------|------|--------|
+| `ai_llm` | AI 大模型 | GitHub Trending + arXiv cs.AI/cs.CL + 36kr |
+| `humanoid_robot` | 人形机器人 | GitHub Trending + arXiv cs.RO + 36kr |
+| `autonomous_driving` | 自动驾驶 | GitHub Trending + arXiv cs.AI/cs.RO + 36kr |
+| `semiconductor` | 半导体 | GitHub Trending + arXiv physics.app-ph + 36kr |
+| `bci` | 脑机接口 | GitHub Trending + arXiv cs.NE/q-bio.QM + 36kr |
+| `new_energy` | 新能源 | GitHub Trending + arXiv physics.app-ph + 36kr |
 
 ## 快速开始
 
 ```bash
 # 安装依赖
-uv venv .venv
-uv pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
-# 填写 API Key
-cp .env.example .env
-# 编辑 .env，填入 GITHUB_TOKEN 和 MINIMAX_API_KEY
+# 配置 API Keys（必填 GITHUB_TOKEN + MINIMAX_API_KEY）
+cp .env.example .env  # 或手动创建 .env
 
-# 运行 Pipeline
+# 运行采集 Pipeline
 python scripts/run_local.py
 
-# 运行测试
-python scripts/run_local.py --skip-notification
-```
-
-## 数据源
-
-| 数据源 | 类型 | 说明 |
-|--------|------|------|
-| GitHub Trending | API | 每日9:00采集 |
-| arXiv cs.AI/cs.CL | API | 每日8:00/20:00 |
-| 36kr 科技新闻 | RSS | 每日9:00/12:00/18:00 |
-| HuggingFace | API | 每日10:00 (需网络) |
-| arXiv PDF 全文 | PDF | PyMuPDF 提取，最多50页 |
-
-## Web Dashboard
-
-```bash
-# 启动 Dashboard
+# 启动 Web Dashboard + API
 python scripts/app.py --port 8765
-# 浏览器打开 http://localhost:8765
+# 访问 http://localhost:8765/
 ```
 
-功能：实时信号 SSE / 统计卡片 / Chart.js 趋势图 / 信号列表 / 管理后台（赛道开关/推送记录）
+## 文档目录
 
-## 架构
+| 文件 | 说明 |
+|------|------|
+| `INSTALL.md` | 安装部署指南 |
+| `API.md` | REST API + WebSocket 接口文档 |
+| `多租户系统架构设计.md` | 多租户架构设计文档 |
+| `实施路线图.md` | 完整开发路线图 |
+| `开发规范.md` | Shortcut/Debug 代码规范 |
+| `赛道清单与数据源分析.md` | 各赛道数据源详细说明 |
+
+## 核心架构
 
 ```
-scripts/run_local.py     # Pipeline 入口
-src/采集/                # 数据采集 (GitHub/arXiv/36kr/HuggingFace)
-src/检测/                # 信号检测 (Star/论文/新闻)
-src/分析/                # LLM 丰富化
-src/推送/                # 微信推送
-src/core/                # 配置、数据库
-config/tracks/           # 赛道配置 (AI/LLM)
+scripts/run_local.py     # Pipeline 入口（采集→检测→丰富→存库→推送）
+scripts/app.py          # Dashboard + REST API（FastAPI）
+src/
+├── 采集/                 # 数据采集（GitHub/arXiv/36kr/HuggingFace）
+├── 检测/                 # 信号检测（Star激增/论文爆发/新闻）
+├── 分析/
+│   ├── enricher.py      # 标准 LLM 丰富化（所有信号）
+│   └── deep_analyzer.py # Premium 深度分析（Phase 4）
+├── 推送/
+│   ├── wechat.py       # 微信推送（已实现）
+│   ├── feishu.py       # 飞书推送（预留）
+│   ├── email.py        # 邮件推送（预留）
+│   └── router.py       # 多租户推送路由器
+├── api/
+│   └── tenant_routes.py # 多租户 REST API（13条路由）
+└── core/
+    ├── config.py        # 全局配置加载
+    ├── database.py      # 数据库 ORM（SQLite）
+    ├── track_loader.py  # 赛道配置加载
+    └── tenant_config.py # 多租户关键词合并
+```
+
+## 数据分层（Premium 服务）
+
+```
+Signal.tenant_ids       # 订阅该信号的租户列表
+Signal.analysis_premium # Premium 深度分析（Premium 租户可见）
+Signal.ad_space         # 广告位（Basic 租户可见，引导升级）
+Signal.has_premium_content # 是否有 Premium 内容
+```
+
+## 多租户推送路由
+
+```
+信号产生 → NotificationRouter.route_signals()
+           → 读取 Signal.tenant_ids
+           → 查询 TenantSubscription（按 plan 过滤）
+           → 按租户渠道配置分群推送（微信/飞书/邮件）
+           → 记录 Alert 到数据库
 ```

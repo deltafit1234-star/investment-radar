@@ -3,7 +3,7 @@
 app:
   name: "投资雷达"
   version: "0.1.0"
-  debug: true  # 🔧 DEBUG: 开发模式，生产环境改为 false
+  debug: false  # 生产环境
 
 # 数据库配置
 database:

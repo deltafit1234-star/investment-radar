@@ -1,7 +1,7 @@
-# 人形机器人 - 赛道配置
+# 新能源/电池 - 赛道配置
 
-track_id: "humanoid_robot"
-track_name: "人形机器人"
+track_id: "new_energy"
+track_name: "新能源/电池"
 category: "P1"
 enabled: true
 
@@ -20,15 +20,15 @@ sources:
       order: "desc"
       per_page: 25
 
-  - source_id: "humanoid_robot_arxiv"
-    name: "arXiv Robotics"
+  - source_id: "new_energy_arxiv"
+    name: "arXiv 应用物理/能源"
     type: "api"
     provider: "arxiv"
     endpoint: "http://export.arxiv.org/api/query"
     enabled: true
     schedule: "0 8,20 * * *"
     params:
-      search_query: "cat:cs.RO"
+      search_query: "cat:physics.app-ph OR cat:cond-mat.mes-hall"
       max_results: 30
       sortBy: "submittedDate"
       sortOrder: "descending"
@@ -58,56 +58,68 @@ detection_rules:
 
   - rule_id: "paper_burst"
     name: "论文激增"
-    description: "机器人领域论文突然增多"
+    description: "新能源/电池相关论文突然增多"
     enabled: true
     threshold:
       high: 15
       medium: 8
     keywords:
-      - "humanoid"
-      - "bipedal"
-      - "robot"
-      - "locomotion"
-      - "manipulation"
-      - "Boston Dynamics"
-      - "Figure"
-      - "Tesla Optimus"
-      - "宇树"
-      - "智元"
-      - "逐际动力"
+      - "solid-state battery"
+      - "sodium-ion battery"
+      - "lithium-ion"
+      - "energy storage"
+      - "hydrogen fuel cell"
+      - "EV battery"
+      - "固态电池"
+      - "钠离子电池"
+      - "锂电池"
+      - "储能"
+      - "氢能"
+      - "动力电池"
+      - "电池材料"
+      - "锂矿"
+      - "固态电解质"
 
   - rule_id: "funding_news"
     name: "融资新闻"
-    description: "人形机器人融资事件"
+    description: "新能源/电池融资事件"
     enabled: true
     keywords:
-      - "人形机器人"
-      - "机器人融资"
-      - "机械臂"
-      - "双足机器人"
-      - "灵巧手"
-      - "具身智能"
+      - "固态电池"
+      - "钠离子电池"
+      - "储能融资"
+      - "氢能"
+      - "动力电池"
+      - "新能源车"
+      - "电池材料"
+      - "锂矿"
+      - "电动化"
     priority: "high"
 
 # 关键词过滤
 keywords:
   include:
-    - "人形机器人"
-    - "具身智能"
-    - "双足机器人"
-    - "机械臂"
-    - "灵巧手"
-    - "机器人"
-    - "robot"
-    - "humanoid"
-    - "bipedal"
-    - "Boston Dynamics"
-    - "Figure AI"
-    - "Tesla Optimus"
-    - "宇树科技"
-    - "智元机器人"
-    - "逐际动力"
-    - "傅利叶智能"
+    - "固态电池"
+    - "钠离子电池"
+    - "锂离子电池"
+    - "储能"
+    - "氢能"
+    - "动力电池"
+    - "新能源车"
+    - "电池材料"
+    - "锂矿"
+    - "电动化"
+    - "固态电解质"
+    - "solid-state battery"
+    - "sodium-ion battery"
+    - "energy storage"
+    - "hydrogen fuel cell"
+    - "EV battery"
+    - "CATL"
+    - "比亚迪"
+    - "宁德时代"
+    - "亿纬锂能"
+    - "中创新航"
   exclude:
     - "恶意"
     - "虚假"
@@ -115,6 +127,6 @@ keywords:
 
 # 关联分析规则
 correlation_rules:
-  - rule_id: "vc_entry"
+  - rule_id: "policy_driven"
     trigger: "funding_news"
-    meaning: "VC入场标志行业进入快速发展期"
+    meaning: "政策加码+资本加速，新能源赛道持续升温"

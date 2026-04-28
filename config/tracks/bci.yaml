@@ -1,7 +1,7 @@
-# 人形机器人 - 赛道配置
+# 脑机接口（BCI）- 赛道配置
 
-track_id: "humanoid_robot"
-track_name: "人形机器人"
+track_id: "bci"
+track_name: "脑机接口"
 category: "P1"
 enabled: true
 
@@ -20,15 +20,15 @@ sources:
       order: "desc"
       per_page: 25
 
-  - source_id: "humanoid_robot_arxiv"
-    name: "arXiv Robotics"
+  - source_id: "bci_arxiv"
+    name: "arXiv 神经工程/脑机接口"
     type: "api"
     provider: "arxiv"
     endpoint: "http://export.arxiv.org/api/query"
     enabled: true
     schedule: "0 8,20 * * *"
     params:
-      search_query: "cat:cs.RO"
+      search_query: "cat:cs.NE OR cat:q-bio.QM"
       max_results: 30
       sortBy: "submittedDate"
       sortOrder: "descending"
@@ -58,56 +58,61 @@ detection_rules:
 
   - rule_id: "paper_burst"
     name: "论文激增"
-    description: "机器人领域论文突然增多"
+    description: "脑机接口相关论文突然增多"
     enabled: true
     threshold:
-      high: 15
-      medium: 8
+      high: 10
+      medium: 5
     keywords:
-      - "humanoid"
-      - "bipedal"
-      - "robot"
-      - "locomotion"
-      - "manipulation"
-      - "Boston Dynamics"
-      - "Figure"
-      - "Tesla Optimus"
-      - "宇树"
-      - "智元"
-      - "逐际动力"
+      - "brain-computer interface"
+      - "BCI"
+      - "neural interface"
+      - "neural implant"
+      - "BMI"
+      - "脑机接口"
+      - "神经接口"
+      - "意念控制"
+      - "Neuralink"
+      - "Synchron"
+      - "Paradromics"
+      - "侵入式脑电"
+      - "非侵入式BCI"
+      - "皮层电位"
+      - "运动想象"
 
   - rule_id: "funding_news"
     name: "融资新闻"
-    description: "人形机器人融资事件"
+    description: "脑机接口融资事件"
     enabled: true
     keywords:
-      - "人形机器人"
-      - "机器人融资"
-      - "机械臂"
-      - "双足机器人"
-      - "灵巧手"
+      - "脑机接口"
+      - "神经接口"
+      - "BCI融资"
+      - "Neuralink"
+      - "脑电"
+      - "侵入式"
       - "具身智能"
     priority: "high"
 
 # 关键词过滤
 keywords:
   include:
-    - "人形机器人"
-    - "具身智能"
-    - "双足机器人"
-    - "机械臂"
-    - "灵巧手"
-    - "机器人"
-    - "robot"
-    - "humanoid"
-    - "bipedal"
-    - "Boston Dynamics"
-    - "Figure AI"
-    - "Tesla Optimus"
-    - "宇树科技"
-    - "智元机器人"
-    - "逐际动力"
-    - "傅利叶智能"
+    - "脑机接口"
+    - "BCI"
+    - "brain-computer interface"
+    - "neural interface"
+    - "neural implant"
+    - "BMI"
+    - "Neuralink"
+    - "Synchron"
+    - "Paradromics"
+    - "意念控制"
+    - "运动想象"
+    - "皮层电位"
+    - "脑电信号"
+    - "神经调控"
+    - "RNN"
+    - "LSTM"
   exclude:
     - "恶意"
     - "虚假"

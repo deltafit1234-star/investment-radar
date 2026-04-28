@@ -37,6 +37,10 @@ app.add_middleware(
 # ─── Database ────────────────────────────────────────────────
 from src.core.database import get_db, init_db
 
+# ─── 多租户 API ────────────────────────────────────────────────
+from src.api.tenant_routes import router as tenant_router
+app.include_router(tenant_router)
+
 
 def _sig_to_api(sig) -> dict:
     """Signal ORM → API dict"""
@@ -390,6 +394,7 @@ tr.unread { background: #1e3a5f; }
   <div style="display:flex; gap:8px; margin-bottom:24px; flex-wrap:wrap;">
     <button class="tab active" id="tabOverview" onclick="showTab('overview')">📊 概览</button>
     <button class="tab" id="tabAdmin" onclick="showTab('admin')">⚙️ 管理</button>
+    <button class="tab" id="tabTenant" onclick="showTab('tenant')">🏢 多租户</button>
   </div>
 
   <!-- Live signals panel -->
@@ -481,6 +486,50 @@ tr.unread { background: #1e3a5f; }
         <h3>📨 推送记录</h3>
       </div>
       <div id="adminAlerts">
+        <div class="loading">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Multi-tenant section (hidden by default) -->
+  <div id="sectionTenant" style="display:none">
+    <!-- Tenant overview cards -->
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; margin-bottom:24px;">
+      <div class="card">
+        <div class="label">租户总数</div>
+        <div class="value" id="tenantCount">-</div>
+      </div>
+      <div class="card">
+        <div class="label">活跃订阅</div>
+        <div class="value" id="tenantSubs">-</div>
+      </div>
+      <div class="card">
+        <div class="label">已配置推送</div>
+        <div class="value" id="tenantNotif">-</div>
+      </div>
+    </div>
+
+    <!-- Create tenant form -->
+    <div class="card" style="margin-bottom:20px; padding:16px;">
+      <h3 style="font-size:14px; color:#e5e7eb; margin-bottom:12px;">➕ 创建租户</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <input id="newTenantId" placeholder="租户ID" style="background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:6px 10px; border-radius:6px; font-size:13px; width:160px;">
+        <input id="newTenantName" placeholder="租户名称" style="background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:6px 10px; border-radius:6px; font-size:13px; width:180px;">
+        <select id="newTenantPlan" style="background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:6px 10px; border-radius:6px; font-size:13px;">
+          <option value="basic">Basic</option>
+          <option value="premium">Premium</option>
+        </select>
+        <button class="refresh-btn" onclick="createTenant()">创建</button>
+      </div>
+    </div>
+
+    <!-- Tenant list -->
+    <div class="signals">
+      <div class="signals-header">
+        <h3>🏢 租户列表</h3>
+        <button class="refresh-btn" onclick="loadTenantData()">🔄 刷新</button>
+      </div>
+      <div id="tenantList">
         <div class="loading">加载中...</div>
       </div>
     </div>
@@ -657,8 +706,10 @@ function showTab(tab) {
   document.getElementById("sectionCharts").style.display = tab === "overview" ? "" : "none";
   document.getElementById("sectionSignals").style.display = tab === "overview" ? "" : "none";
   document.getElementById("sectionAdmin").style.display = tab === "admin" ? "" : "none";
+  document.getElementById("sectionTenant").style.display = tab === "tenant" ? "" : "none";
 
   if (tab === "admin") loadAdminData();
+  if (tab === "tenant") loadTenantData();
 }
 
 // ── Load admin data ──────────────────────────────────────────
@@ -794,6 +845,101 @@ connectSSE();
 document.getElementById("sseTrackFilter")?.addEventListener("change", updateSSETackFilter);
 
 setInterval(() => { if (!ssePaused) { loadStats(); loadSignals(); } }, 60000);  // 每分钟刷新
+
+// ── Multi-tenant Management ────────────────────────────────────
+async function loadTenantData() {
+  try {
+    const tenants = await api("/v1/tenants");
+    const tracks = await api("/v1/tracks");
+    const trackMap = {};
+    tracks.forEach(t => trackMap[t.track_id] = t.track_name);
+
+    // Overview stats
+    document.getElementById("tenantCount").textContent = tenants.length;
+    let totalSubs = 0, totalNotif = 0;
+    const subPromises = tenants.map(async t => {
+      try {
+        const subs = await api(`/v1/tenants/${t.id}/subscriptions`);
+        const notif = await api(`/v1/tenants/${t.id}/notification`);
+        t._subscriptions = subs;
+        t._notification = notif;
+        totalSubs += subs.length;
+        totalNotif += (notif.wechat_target || notif.email ? 1 : 0);
+      } catch(e) { t._subscriptions = []; t._notification = {}; }
+    });
+    await Promise.all(subPromises);
+
+    document.getElementById("tenantCount").textContent = tenants.length;
+    document.getElementById("tenantSubs").textContent = totalSubs;
+    document.getElementById("tenantNotif").textContent = totalNotif;
+
+    // Render tenant list
+    const container = document.getElementById("tenantList");
+    if (tenants.length === 0) {
+      container.innerHTML = '<div style="padding:40px; text-align:center; color:#6b7280;">暂无租户，请使用上方表单创建</div>';
+      return;
+    }
+
+    let html = `<table>
+      <thead><tr>
+        <th>租户</th><th>Plan</th><th>订阅赛道</th><th>推送配置</th><th>创建时间</th><th>操作</th>
+      </tr></thead><tbody>`;
+
+    tenants.forEach(t => {
+      const subs = t._subscriptions || [];
+      const notif = t._notification || {};
+      const subTags = subs.length > 0
+        ? subs.map(s => `<span class="track-tag">${trackMap[s.track_id] || s.track_id}</span>`).join(' ')
+        : '<span style="color:#6b7280;font-size:12px">暂无订阅</span>';
+      const notifInfo = [
+        notif.wechat_target ? `微信: ${notif.wechat_target.slice(0,15)}...` : null,
+        notif.email ? `邮件: ${notif.email}` : null,
+      ].filter(Boolean).join('<br>') || '<span style="color:#6b7280;font-size:12px">未配置</span>';
+      const planColor = t.plan === 'premium' ? '#d8b4fe' : '#9ca3af';
+      const created = t.created_at ? new Date(t.created_at).toLocaleDateString("zh-CN") : '-';
+      html += `<tr>
+        <td><strong style="color:#e5e7eb">${t.name}</strong><br><span style="color:#6b7280;font-size:11px">${t.id}</span></td>
+        <td><span style="color:${planColor};font-size:12px;font-weight:500">${t.plan.toUpperCase()}</span></td>
+        <td>${subTags}</td>
+        <td style="font-size:12px;color:#9ca3af">${notifInfo}</td>
+        <td style="color:#6b7280;font-size:12px">${created}</td>
+        <td>
+          <button class="refresh-btn" style="padding:4px 8px;font-size:11px" onclick="deleteTenant('${t.id}')">删除</button>
+        </td>
+      </tr>`;
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch(e) {
+    document.getElementById("tenantList").innerHTML = `<div style="padding:40px; text-align:center; color:#ef4444;">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function createTenant() {
+  const id = document.getElementById("newTenantId").value.trim();
+  const name = document.getElementById("newTenantName").value.trim();
+  const plan = document.getElementById("newTenantPlan").value;
+  if (!id || !name) { alert("请填写租户ID和名称"); return; }
+  try {
+    await api("/v1/tenants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name, plan }),
+    });
+    document.getElementById("newTenantId").value = "";
+    document.getElementById("newTenantName").value = "";
+    loadTenantData();
+  } catch(e) { alert("创建失败: " + e.message); }
+}
+
+async function deleteTenant(tenantId) {
+  if (!confirm(`确定停用租户 ${tenantId}？`)) return;
+  try {
+    await api(`/v1/tenants/${tenantId}`, { method: "DELETE" });
+    loadTenantData();
+  } catch(e) { alert("删除失败: " + e.message); }
+}
 </script>
 </body>
 </html>

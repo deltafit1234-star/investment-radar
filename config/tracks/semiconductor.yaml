@@ -20,7 +20,7 @@ sources:
       order: "desc"
       per_page: 25
 
-  - source_id: "arxiv_ee"
+  - source_id: "semiconductor_arxiv"
     name: "arXiv 硬件/芯片"
     type: "api"
     provider: "arxiv"

@@ -20,7 +20,7 @@ sources:
       order: "desc"
       per_page: 25
 
-  - source_id: "arxiv_cv"
+  - source_id: "autonomous_driving_arxiv"
     name: "arXiv Computer Vision"
     type: "api"
     provider: "arxiv"
