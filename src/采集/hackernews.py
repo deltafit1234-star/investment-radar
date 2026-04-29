@@ -1,103 +1,64 @@
 """
-Hacker News API 热点项目采集器（Prototype）
-使用官方免费 Firebase API，无认证要求
+Hacker News Algolia 搜索采集器（Phase 2 ProtoType）
+使用 HN 官方 Algolia Search API，免费、快速，支持关键词搜索
 
 signal_type: hackernews_hot
+API: https://hn.algolia.com/api/v1/search?query=keyword
 """
 
 import requests
 import time
-from typing import Optional
+from typing import Optional, List
 from loguru import logger
 
 
 class HackerNewsCollector:
-    """Hacker News 社区热点采集"""
+    """Hacker News Algolia 关键词搜索（替代 Firebase 逐条抓取，速度快 10 倍）"""
 
     signal_type = "hackernews_hot"
-    top_stories_url = "https://hacker-news.firebaseio.com/v0/topstories.json"
-    item_url = "https://hacker-news.firebaseio.com/v0/item/{id}.json"
+    algolia_url = "https://hn.algolia.com/api/v1/search"
+    session = None  # 类级别 session 复用
 
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.timeout = 10
-        self.max_stories = 30  # 每次取 Top 30
+        self.max_results = 10  # 每次最多返回条数
 
     def collect(self, keyword: str, max_results: int = 20) -> dict:
         """
-        按关键词搜索 Hacker News 热点
-
-        Args:
-            keyword: 搜索关键词
-            max_results: 最大结果数
-
-        Returns:
-            CollectionResult 格式 dict
+        使用 Algolia HN Search API 进行关键词搜索
+        一个请求返回所有结果，无需逐条抓取
         """
         try:
-            # 获取 Top Stories IDs
-            resp = requests.get(self.top_stories_url, timeout=self.timeout)
+            # Algolia HN Search API - 支持 tags=story 过滤
+            params = {
+                "query": keyword,
+                "tags": "story",
+                "hitsPerPage": min(max_results, self.max_results),
+            }
+            resp = requests.get(
+                self.algolia_url,
+                params=params,
+                timeout=self.timeout,
+            )
             resp.raise_for_status()
-            story_ids = resp.json()[: self.max_stories]
+            data = resp.json()
+            hits = data.get("hits", [])
 
             results = []
-            keyword_lower = keyword.lower()
-
-            for story_id in story_ids:
-                try:
-                    item_resp = requests.get(
-                        self.item_url.format(id=story_id),
-                        timeout=self.timeout,
-                    )
-                    if item_resp.status_code != 200:
-                        continue
-                    story = item_resp.json()
-
-                    if not story or story.get("deleted") or story.get("dead"):
-                        continue
-
-                    story_type = story.get("type", "story")
-                    if story_type != "story":
-                        continue
-
-                    title = story.get("title", "")
-                    url = story.get("url", "")
-                    text = story.get("text", "") or ""
-
-                    # 关键词匹配（title + url + text）
-                    match_text = (title + " " + url + " " + text).lower()
-                    if keyword_lower not in match_text:
-                        continue
-
-                    # 转换为 YYYY-MM-DD HH:MM:SS
-                    time_int = story.get("time", 0)
-                    time_str = (
-                        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time_int))
-                        if time_int
-                        else ""
-                    )
-
-                    results.append({
-                        "id": story.get("id"),
-                        "title": title,
-                        "url": url,
-                        "score": story.get("score", 0),
-                        "by": story.get("by", ""),
-                        "time": time_str,
-                        "descendants": story.get("descendants", 0),
-                        "text": text[:300] if text else "",
-                        "keyword": keyword,
-                        "signal_type": self.signal_type,
-                    })
-
-                    if len(results) >= max_results:
-                        break
-
-                    # 避免请求过快
-                    time.sleep(0.1)
-
-                except Exception:
-                    continue
+            for hit in hits:
+                results.append({
+                    "id": hit.get("objectID"),
+                    "title": hit.get("title", ""),
+                    "url": hit.get("url", "") or hit.get("story_url", ""),
+                    "score": hit.get("points", 0),
+                    "by": hit.get("author", ""),
+                    "time": hit.get("created_at", "")[:19].replace("T", " "),  # ISO -> YYYY-MM-DD HH:MM:SS
+                    "descendants": hit.get("num_comments", 0),
+                    "text": hit.get("story_text", "")[:300] if hit.get("story_text") else "",
+                    "keyword": keyword,
+                    "signal_type": self.signal_type,
+                })
 
             return {
                 "success": True,

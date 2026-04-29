@@ -254,7 +254,9 @@ def run_techcrunch(config, track_id: str = "ai_llm") -> list:
         from src.采集.techcrunch import TechCrunchCollector
 
         collector = TechCrunchCollector()
-        result = collector.run()
+        kw_dict = _get_track_keywords(track_id, config)
+        keywords = kw_dict.get("include", []) if isinstance(kw_dict, dict) else kw_dict
+        result = collector.run(keywords=keywords[:3])  # 最多3个关键词
 
         if result["success"]:
             logger.info(f"  成功: {result['total_count']} 条新闻")
@@ -315,7 +317,9 @@ def run_hackernews(config, track_id: str = "ai_llm") -> list:
         from src.采集.hackernews import HackerNewsCollector
 
         collector = HackerNewsCollector()
-        result = collector.run()
+        kw_dict = _get_track_keywords(track_id, config)
+        keywords = kw_dict.get("include", []) if isinstance(kw_dict, dict) else kw_dict
+        result = collector.run(keywords=keywords[:3])  # 最多3个关键词
 
         if result["success"]:
             logger.info(f"  成功: {result['total_count']} 条热点")

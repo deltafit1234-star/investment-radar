@@ -34,7 +34,10 @@ class TechCrunchCollector:
             CollectionResult 格式 dict
         """
         try:
-            feed = feedparser.parse(self.feed_url, timeout=self.timeout)
+            import requests
+            resp = requests.get(self.feed_url, timeout=self.timeout)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
 
             if not feed.entries:
                 return {
