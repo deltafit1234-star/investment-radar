@@ -35,6 +35,10 @@ logger.add(
     level="INFO"
 )
 
+# Phase 2 分析组件
+from src.分析.thematic_grouper import run_thematic_grouping
+from src.分析.signal_filter import run_signal_filter
+
 
 def setup():
     logger.info("=" * 60)
@@ -252,11 +256,11 @@ def run_techcrunch(config, track_id: str = "ai_llm") -> list:
         collector = TechCrunchCollector()
         result = collector.run()
 
-        if result.success:
-            logger.info(f"  成功: {result.total_count} 条新闻")
-            return result.data or []
+        if result["success"]:
+            logger.info(f"  成功: {result['total_count']} 条新闻")
+            return result["data"] or []
         else:
-            logger.warning(f"  TechCrunch 失败: {result.error}")
+            logger.warning(f"  TechCrunch 失败: {result['error']}")
             return []
     except Exception as e:
         logger.warning(f"  TechCrunch 异常: {e}")
@@ -273,13 +277,14 @@ def run_itjuzi(config, track_id: str = "ai_llm") -> list:
         from src.采集.itjuzi import ItjuziFundingCollector
 
         collector = ItjuziFundingCollector()
-        # 按赛道关键词搜索
-        keywords = _get_track_keywords(track_id, config)
+        # 按赛道关键词搜索（keywords 是 dict: {include, exclude}）
+        kw_dict = _get_track_keywords(track_id, config)
+        keywords = kw_dict.get("include", []) if isinstance(kw_dict, dict) else kw_dict
         results = []
         for kw in keywords[:3]:  # 最多试3个关键词
             result = collector.collect(kw)
-            if result.success:
-                results.extend(result.data or [])
+            if result["success"]:
+                results.extend(result["data"] or [])
         logger.info(f"  成功: {len(results)} 条融资事件")
         return results
     except Exception as e:
@@ -312,11 +317,11 @@ def run_hackernews(config, track_id: str = "ai_llm") -> list:
         collector = HackerNewsCollector()
         result = collector.run()
 
-        if result.success:
-            logger.info(f"  成功: {result.total_count} 条热点")
-            return result.data or []
+        if result["success"]:
+            logger.info(f"  成功: {result['total_count']} 条热点")
+            return result["data"] or []
         else:
-            logger.warning(f"  Hacker News 失败: {result.error}")
+            logger.warning(f"  Hacker News 失败: {result['error']}")
             return []
     except Exception as e:
         logger.warning(f"  Hacker News 异常: {e}")
