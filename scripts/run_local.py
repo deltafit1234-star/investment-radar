@@ -851,13 +851,131 @@ def _send_direct_wechat(signals: list, target: str) -> bool:
         return False
 
 
-# ═══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+# Phase 2: 每日投资情报报告生成 + 推送
+# ═══════════════════════════════════════════════════════════════════
+def run_daily_report(
+    config,
+    target_tracks: list,
+    signals_by_track: dict = None,
+    report_date: str = None,
+    skip_push: bool = False,
+) -> dict:
+    """生成并推送每日报告（Premium专属）
+
+    Args:
+        config: 全局配置
+        target_tracks: 赛道列表
+        signals_by_track: 内存中的信号字典 {track_id: [signals]}（可选）
+        report_date: 报告日期 YYYY-MM-DD（默认今天）
+        skip_push: 是否跳过推送（默认 False）
+
+    Returns:
+        dict: {"generated": N, "pushed": N, "skipped": N, "failed": N}
+    """
+    from datetime import datetime
+    from src.分析.daily_report import DailyReportGenerator
+    from src.推送.report_router import ReportRouter
+    from src.core.database import get_db
+
+    if report_date is None:
+        report_date = datetime.now().strftime("%Y-%m-%d")
+
+    db = get_db()
+    generator = DailyReportGenerator(llm_config=config.llm_config)
+    router = ReportRouter()
+
+    stats = {"generated": 0, "pushed": 0, "skipped": 0, "failed": 0, "tracks": []}
+
+    for track_cfg in target_tracks:
+        track_id = track_cfg["track_id"]
+        track_name = track_cfg.get("track_name", track_id)
+
+        # 获取信号：优先用内存的，否则从DB读
+        if signals_by_track and track_id in signals_by_track:
+            signals = signals_by_track[track_id]
+        else:
+            db_signals = db.get_signals_for_date(report_date, track_id=track_id)
+            signals = [s.to_dict() for s in db_signals]
+
+        if not signals:
+            logger.info(f"[日报] {track_name}: 今日无信号，跳过报告")
+            stats["skipped"] += 1
+            continue
+
+        # 检查是否已有报告（避免重复生成）
+        if db.is_duplicate_report(track_id, report_date):
+            logger.info(f"[日报] {track_name}: 今日报告已存在，跳过")
+            stats["skipped"] += 1
+            continue
+
+        # 生成报告
+        logger.info(f"[日报] 生成中: {track_name} ({len(signals)} 个信号)")
+        try:
+            report = generator.generate(
+                track_id=track_id,
+                track_name=track_name,
+                signals=signals,
+                report_date=report_date,
+            )
+        except Exception as e:
+            logger.warning(f"[日报] 生成失败: {track_name} - {e}")
+            stats["failed"] += 1
+            continue
+
+        # 存库
+        try:
+            report_data = {
+                "track_id": track_id,
+                "track_name": track_name,
+                "report_date": report_date,
+                "is_silent": report.get("is_silent", False),
+                "signal_count": report.get("signal_count", len(signals)),
+                "high_priority_count": sum(1 for s in signals if s.get("priority") == "high"),
+                "merged_count": 0,
+                "themes": report.get("themes"),
+                "report_text": report.get("report_text", ""),
+                "report_data": report,
+            }
+            saved_report = db.save_daily_report(report_data)
+            logger.info(f"[日报] 已保存: {track_name} / {report_date}")
+            stats["generated"] += 1
+        except Exception as e:
+            logger.warning(f"[日报] 存库失败: {track_name} - {e}")
+            stats["failed"] += 1
+            continue
+
+        # 推送给 Premium 租户
+        if not skip_push:
+            try:
+                ok = router.route_reports([report])
+                if ok.get("pushed", 0) > 0:
+                    db.mark_report_pushed(saved_report.id)
+                    stats["pushed"] += ok.get("pushed", 0)
+                else:
+                    logger.info(f"[日报] 无 Premium 订阅者或推送失败: {track_name}")
+            except Exception as e:
+                logger.warning(f"[日报] 推送异常: {track_name} - {e}")
+
+        stats["tracks"].append(track_name)
+
+    logger.info(
+        f"[日报] 完成: 生成{stats['generated']}份 / "
+        f"推送{stats['pushed']}份 / 跳过{stats['skipped']}份 / 失败{stats['failed']}份"
+    )
+    return stats
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Main
-# ═══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--track", default=None, help="指定运行单个赛道（如 ai_llm），默认运行所有赛道")
     parser.add_argument("--skip-notification", action="store_true")
+    parser.add_argument("--skip-report", action="store_true", help="跳过日报生成（仅采集+推送）")
+    parser.add_argument("--report-only", action="store_true", help="仅生成日报（跳过采集，直接从DB读今日信号）")
+    parser.add_argument("--report-date", default=None, help="日报日期 YYYY-MM-DD（--report-only 时使用）")
     parser.add_argument("--weekly-report", action="store_true", help="生成周报而非日报")
     parser.add_argument("--week-start", default=None, help="周起始日期 YYYY-MM-DD")
     parser.add_argument("--deliver-to", default=None, help="推送目标，如 weixin:chat_id（支持分群推送）")
@@ -868,6 +986,17 @@ def main():
     from src.core.config import get_config
     from src.core.track_loader import get_enabled_tracks
     config = get_config()
+
+    # ── Report-only 模式：跳过采集，直接从 DB 读信号生成日报 ──────────
+    from datetime import datetime
+    if args.report_only:
+        target_tracks = get_enabled_tracks()
+        if args.track:
+            target_tracks = [t for t in target_tracks if t["track_id"] == args.track]
+        report_date = args.report_date or datetime.now().strftime("%Y-%m-%d")
+        logger.info(f"[日报] Report-only 模式: {report_date}, 赛道: {[t['track_id'] for t in target_tracks]}")
+        stats = run_daily_report(config, target_tracks, report_date=report_date, skip_push=args.skip_notification)
+        return 0
 
     # 周报模式：读取历史信号，生成周报
     if args.weekly_report:
@@ -995,6 +1124,23 @@ def main():
         notify_ok = True
     else:
         notify_ok = run_notification(all_signals, target=args.deliver_to)
+
+    # ── Phase 2: 每日报告生成 + 推送（Premium专属）───────────────
+    # 将 all_signals 按赛道分组，传入日报生成器
+    from collections import defaultdict
+    signals_by_track: dict = defaultdict(list)
+    for sig in all_signals:
+        tid = sig.get("track_id", "unknown")
+        signals_by_track[tid].append(sig)
+
+    if args.skip_report:
+        logger.info("[跳过] 日报生成（--skip-report）")
+    else:
+        report_stats = run_daily_report(
+            config, target_tracks,
+            signals_by_track=dict(signals_by_track),
+            skip_push=args.skip_notification,
+        )
 
     logger.info("=" * 60)
     total_arxiv = sum(len(run_arxiv(config, t["track_id"]) or []) for t in target_tracks)

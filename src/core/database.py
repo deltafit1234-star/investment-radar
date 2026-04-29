@@ -404,7 +404,35 @@ class Database:
             return query.limit(limit).offset(offset).all()
         finally:
             session.close()
-    
+
+    def get_signals_for_date(
+        self,
+        report_date: str,
+        track_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Signal]:
+        """获取指定日期的信号（用于日报生成）
+
+        Args:
+            report_date: 日期 YYYY-MM-DD
+            track_id: 赛道ID（可选）
+            limit: 返回数量上限
+        """
+        session = self.get_session()
+        try:
+            from datetime import datetime
+            start = datetime.strptime(report_date, "%Y-%m-%d")
+            end = start.replace(hour=23, minute=59, second=59)
+            query = session.query(Signal).filter(
+                Signal.created_at >= start,
+                Signal.created_at <= end,
+            )
+            if track_id:
+                query = query.filter(Signal.track_id == track_id)
+            return query.order_by(Signal.created_at.desc()).limit(limit).all()
+        finally:
+            session.close()
+
     def get_signal_by_id(self, signal_id: int) -> Optional[Signal]:
         """根据ID获取信号"""
         session = self.get_session()
