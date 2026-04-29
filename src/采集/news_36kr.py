@@ -26,8 +26,10 @@ class News36krCollector(BaseCollector):
         super().__init__(source_config)
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (compatible; InvestmentRadar/1.0)",
-            "Accept": "application/rss+xml, application/xml, text/xml",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": "https://36kr.com/",
         })
 
     def fetch(self) -> CollectorResult:
