@@ -175,6 +175,77 @@ class Alert(Base):
         }
 
 
+class DailyReport(Base):
+    """每日情报报告表（Phase 2 - Premium专属）"""
+    __tablename__ = "daily_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    track_id = Column(String(50), nullable=False, index=True)
+    track_name = Column(String(200))
+    report_date = Column(String(10), nullable=False)       # YYYY-MM-DD
+    is_silent = Column(Boolean, default=False)             # 静默日标记
+    signal_count = Column(Integer, default=0)
+    high_priority_count = Column(Integer, default=0)
+    merged_count = Column(Integer, default=0)               # 合并过来的信号数
+    themes = Column(JSON, nullable=True)                   # 主题分组
+    report_text = Column(Text, nullable=True)              # 推送用文本
+    report_data = Column(JSON, nullable=True)              # 完整数据（存库）
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    pushed_at = Column(DateTime, nullable=True)             # 推送时间
+    status = Column(String(20), default="pending")          # pending/pushed/failed
+
+    __table_args__ = (
+        Index('idx_daily_report_track_date', 'track_id', 'report_date', unique=True),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "track_id": self.track_id,
+            "track_name": self.track_name,
+            "report_date": self.report_date,
+            "is_silent": self.is_silent,
+            "signal_count": self.signal_count,
+            "high_priority_count": self.high_priority_count,
+            "merged_count": self.merged_count,
+            "themes": self.themes,
+            "report_text": self.report_text,
+            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
+            "pushed_at": self.pushed_at.isoformat() if self.pushed_at else None,
+            "status": self.status,
+        }
+
+
+class ReportSignal(Base):
+    """报告-信号关联表（报告包含哪些信号）"""
+    __tablename__ = "report_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_id = Column(Integer, nullable=False, index=True)   # 关联 DailyReport.id
+    signal_id = Column(Integer, nullable=True)                # 关联 Signal.id（可能为空，信号已过期）
+    signal_title = Column(String(500))                        # 信号标题（冗余存储，防信号过期）
+    signal_type = Column(String(50))
+    priority = Column(String(20))
+    source = Column(String(50))                               # 数据来源（itjuzi/github/arxiv等）
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_report_signal_report', 'report_id'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "report_id": self.report_id,
+            "signal_id": self.signal_id,
+            "signal_title": self.signal_title,
+            "signal_type": self.signal_type,
+            "priority": self.priority,
+            "source": self.source,
+            "added_at": self.added_at.isoformat() if self.added_at else None,
+        }
+
+
 class TrendingArchive(Base):
     """GitHub Trending 每日归档表"""
     __tablename__ = "trending_archive"
@@ -860,6 +931,148 @@ class Database:
                 if sig.tenant_ids and tenant_id in sig.tenant_ids:
                     result.append(sig.to_dict(tenant_plan=tenant_plan))
             return result
+        finally:
+            session.close()
+
+    # ─── DailyReport（Phase 2）─────────────────────────────────────────
+    def save_daily_report(self, report_data: Dict[str, Any]) -> DailyReport:
+        """保存每日报告"""
+        session = self.get_session()
+        try:
+            report = DailyReport(
+                track_id=report_data["track_id"],
+                track_name=report_data.get("track_name", ""),
+                report_date=report_data["report_date"],
+                is_silent=report_data.get("is_silent", False),
+                signal_count=report_data.get("signal_count", 0),
+                high_priority_count=report_data.get("high_priority_count", 0),
+                merged_count=report_data.get("merged_count", 0),
+                themes=report_data.get("themes"),
+                report_text=report_data.get("report_text"),
+                report_data=report_data.get("report_data"),
+                status="pending",
+            )
+            session.add(report)
+            session.commit()
+            session.refresh(report)
+            logger.info(f"日报已保存: {report.track_id} - {report.report_date}")
+            return report
+        except Exception as e:
+            session.rollback()
+            # 已存在则更新
+            if "UNIQUE" in str(e) or "duplicate" in str(e).lower():
+                return self._update_daily_report(session, report_data)
+            logger.error(f"保存日报失败: {e}")
+            raise
+        finally:
+            session.close()
+
+    def _update_daily_report(self, session: Session, report_data: Dict[str, Any]) -> DailyReport:
+        """更新已存在的日报"""
+        try:
+            report = (
+                session.query(DailyReport)
+                .filter(
+                    DailyReport.track_id == report_data["track_id"],
+                    DailyReport.report_date == report_data["report_date"],
+                )
+                .first()
+            )
+            if report:
+                report.signal_count = report_data.get("signal_count", report.signal_count)
+                report.high_priority_count = report_data.get("high_priority_count", report.high_priority_count)
+                report.merged_count = report_data.get("merged_count", report.merged_count)
+                report.themes = report_data.get("themes", report.themes)
+                report.report_text = report_data.get("report_text", report.report_text)
+                report.report_data = report_data.get("report_data", report.report_data)
+                report.status = "pending"
+                session.commit()
+                session.refresh(report)
+            return report
+        except Exception as e:
+            session.rollback()
+            raise
+
+    def save_report_signal(self, report_id: int, signal: Dict[str, Any]) -> ReportSignal:
+        """保存报告-信号关联"""
+        session = self.get_session()
+        try:
+            rs = ReportSignal(
+                report_id=report_id,
+                signal_id=signal.get("id"),
+                signal_title=(signal.get("full_name") or signal.get("title", ""))[:500],
+                signal_type=signal.get("type", ""),
+                priority=signal.get("priority", "low"),
+                source=signal.get("type", ""),
+            )
+            session.add(rs)
+            session.commit()
+            session.refresh(rs)
+            return rs
+        except Exception as e:
+            session.rollback()
+            logger.warning(f"保存报告信号关联失败: {e}")
+            raise
+        finally:
+            session.close()
+
+    def get_daily_reports(
+        self,
+        track_id: Optional[str] = None,
+        report_date: Optional[str] = None,
+        limit: int = 30,
+    ) -> List[DailyReport]:
+        """获取日报列表"""
+        session = self.get_session()
+        try:
+            query = session.query(DailyReport)
+            if track_id:
+                query = query.filter(DailyReport.track_id == track_id)
+            if report_date:
+                query = query.filter(DailyReport.report_date == report_date)
+            return query.order_by(DailyReport.report_date.desc()).limit(limit).all()
+        finally:
+            session.close()
+
+    def get_pending_daily_reports(self) -> List[DailyReport]:
+        """获取待推送的日报"""
+        session = self.get_session()
+        try:
+            return (
+                session.query(DailyReport)
+                .filter(DailyReport.status == "pending")
+                .order_by(DailyReport.generated_at.asc())
+                .all()
+            )
+        finally:
+            session.close()
+
+    def mark_report_pushed(self, report_id: int) -> None:
+        """标记日报已推送"""
+        session = self.get_session()
+        try:
+            report = session.query(DailyReport).filter(DailyReport.id == report_id).first()
+            if report:
+                from datetime import datetime as dt
+                report.status = "pushed"
+                report.pushed_at = dt.utcnow()
+                session.commit()
+        finally:
+            session.close()
+
+    def is_duplicate_report(self, track_id: str, report_date: str) -> bool:
+        """检查某赛道某日期是否已有报告"""
+        session = self.get_session()
+        try:
+            existing = (
+                session.query(DailyReport)
+                .filter(
+                    DailyReport.track_id == track_id,
+                    DailyReport.report_date == report_date,
+                )
+                .first()
+            )
+            return existing is not None
         finally:
             session.close()
 

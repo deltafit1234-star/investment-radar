@@ -264,6 +264,43 @@ def run_techcrunch(config, track_id: str = "ai_llm") -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 数据源 8: IT桔子融资爬虫（新增 - Phase 2 ProtoType）
+# ═══════════════════════════════════════════════════════════════════
+def run_itjuzi(config, track_id: str = "ai_llm") -> list:
+    """采集 IT桔子 国内融资事件（爬虫原型）"""
+    logger.info(f"[8/N] 采集 IT桔子（{track_id}）...")
+    try:
+        from src.采集.itjuzi import ItjuziFundingCollector
+
+        collector = ItjuziFundingCollector()
+        # 按赛道关键词搜索
+        keywords = _get_track_keywords(track_id, config)
+        results = []
+        for kw in keywords[:3]:  # 最多试3个关键词
+            result = collector.collect(kw)
+            if result.success:
+                results.extend(result.data or [])
+        logger.info(f"  成功: {len(results)} 条融资事件")
+        return results
+    except Exception as e:
+        logger.warning(f"  IT桔子异常: {e}")
+        return []
+
+
+def _get_track_keywords(track_id: str, config) -> list:
+    """从赛道配置中获取关键词列表"""
+    try:
+        from src.core.track_loader import get_enabled_tracks
+        tracks = get_enabled_tracks()
+        for t in tracks:
+            if t.get("track_id") == track_id:
+                return t.get("keywords", [])
+    except Exception:
+        pass
+    return []
+
+
+# ═══════════════════════════════════════════════════════════════════
 # 数据源 7: Hacker News API（新增 - Phase 2 ProtoType）
 # ═══════════════════════════════════════════════════════════════════
 def run_hackernews(config, track_id: str = "ai_llm") -> list:
@@ -296,6 +333,7 @@ def run_detection(
     patents_data: list,
     techcrunch_data: list,
     hn_data: list,
+    itjuzi_data: list,
     config,
     track_id: str = "ai_llm"
 ) -> list:
@@ -305,6 +343,10 @@ def run_detection(
         github_data: GitHub Trending 数据（所有赛道共用）
         arxiv_data: 当前赛道的 arXiv 论文
         news_data: 当前赛道的新闻数据
+        patents_data: Google Patents 专利数据
+        techcrunch_data: TechCrunch 新闻数据
+        hn_data: Hacker News 热点数据
+        itjuzi_data: IT桔子 融资事件数据
         config: 全局配置
         track_id: 赛道ID，用于加载赛道专属规则
     """
@@ -553,6 +595,35 @@ def run_detection(
                 "priority": priority,
                 "message": f"HN 热点: {title}",
                 "score": score,
+            })
+
+        # ── IT桔子 融资事件信号 ────────────────────────
+        for event in itjuzi_data:
+            company = event.get("company_name", "")
+            round_type = event.get("round", "未知轮次")
+            amount = event.get("amount", "")
+            investors = event.get("investors", "")
+            date_str = event.get("date", "")
+            tags = event.get("tags", [])
+
+            # IT桔子融资 = 高可信度信号
+            priority = "high"
+            if "天使" in round_type or "种子" in round_type:
+                priority = "medium"
+
+            alerts.append({
+                "type": "itjuzi_funding",
+                "full_name": f"{company} {round_type}",
+                "content": f"轮次: {round_type} | 金额: {amount} | 投资方: {investors}",
+                "url": "",
+                "published_at": date_str,
+                "priority": priority,
+                "message": f"融资: {company}完成{round_type}",
+                "company": company,
+                "round": round_type,
+                "amount": amount,
+                "investors": investors,
+                "tags": tags,
             })
 
         logger.info(f"  检测到 {len(alerts)} 个告警")
@@ -823,16 +894,20 @@ def main():
         patents_data = run_google_patents(config, track_id)
         techcrunch_data = run_techcrunch(config, track_id)
         hn_data = run_hackernews(config, track_id)
+        itjuzi_data = run_itjuzi(config, track_id)
 
-        # 2. 检测
+        # 2. 检测（包含 IT桔子融资数据）
         alerts = run_detection(
             github_data, arxiv_data, news_data,
-            patents_data, techcrunch_data, hn_data,
+            patents_data, techcrunch_data, hn_data, itjuzi_data,
             config, track_id
         )
 
+        # 2b. 专题分组（按主题归类信号）
+        grouped_alerts = run_thematic_grouping(alerts, config, track_id)
+
         # 3. 关联分析
-        correlated = run_correlation(alerts, config)
+        correlated = run_correlation(grouped_alerts, config)
 
         # 4. 丰富化（仅 Star 激增走 LLM）
         star_alerts = [a for a in correlated if a.get("type") == "star_surge"]
@@ -840,13 +915,16 @@ def main():
         enriched_stars = run_enrichment(star_alerts, config) if star_alerts else []
         track_signals = enriched_stars + other_alerts
 
+        # 4b. 信号过滤（评分 + 静默日判断）
+        filtered_signals = run_signal_filter(track_signals, config, track_id)
+
         # 标记赛道归属
-        for sig in track_signals:
+        for sig in filtered_signals:
             sig["track_id"] = track_id
             sig["track_name"] = track_name
 
-        logger.info(f"  赛道 {track_id}: 检测到 {len(track_signals)} 个信号")
-        all_signals.extend(track_signals)
+        logger.info(f"  赛道 {track_id}: 检测到 {len(filtered_signals)} 个信号")
+        all_signals.extend(filtered_signals)
 
     # ── 全局存库 + 去重 ───────────────────────────
     try:
