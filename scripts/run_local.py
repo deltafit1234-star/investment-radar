@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-投资雷达 - 本地运行脚本 (Phase 1)
-AI大模型赛道完整数据链路
+投资雷达 - 本地运行脚本 (Phase 1 + 2 ProtoType)
+AI大模型赛道完整数据链路 + 每日情报报告（新数据源）
 """
 
 import sys
@@ -212,13 +212,90 @@ def run_huggingface(config) -> list:
         return []
 
 
-# ═══════════════════════════════════════════════════════
-# 检测: Star 激增 + 论文爆发 + 融资新闻
-# ═══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+# 数据源 5: Google Patents（新增 - Phase 2 ProtoType）
+# ═══════════════════════════════════════════════════════════════════
+def run_google_patents(config, track_id: str = "ai_llm") -> list:
+    """采集 Google Patents 专利趋势（按赛道关键词搜索）"""
+    logger.info(f"[5/N] 采集 Google Patents（{track_id}）...")
+    try:
+        from src.采集.google_patents import GooglePatentsCollector
+
+        source = config.get_source_config(track_id, "google_patents")
+        if not source:
+            logger.warning(f"  未找到 {track_id} 的 Google Patents 配置，跳过")
+            return []
+
+        collector = GooglePatentsCollector(source)
+        result = collector.run()
+
+        if result.success:
+            logger.info(f"  成功: {result.total_count} 条专利")
+            return result.data or []
+        else:
+            logger.warning(f"  Google Patents 失败: {result.error}")
+            return []
+    except Exception as e:
+        logger.warning(f"  Google Patents 异常: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 数据源 6: TechCrunch RSS（新增 - Phase 2 ProtoType）
+# ═══════════════════════════════════════════════════════════════════
+def run_techcrunch(config, track_id: str = "ai_llm") -> list:
+    """采集 TechCrunch 国际科技新闻（按赛道关键词过滤）"""
+    logger.info(f"[6/N] 采集 TechCrunch RSS（{track_id}）...")
+    try:
+        from src.采集.techcrunch import TechCrunchCollector
+
+        collector = TechCrunchCollector()
+        result = collector.run()
+
+        if result.success:
+            logger.info(f"  成功: {result.total_count} 条新闻")
+            return result.data or []
+        else:
+            logger.warning(f"  TechCrunch 失败: {result.error}")
+            return []
+    except Exception as e:
+        logger.warning(f"  TechCrunch 异常: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 数据源 7: Hacker News API（新增 - Phase 2 ProtoType）
+# ═══════════════════════════════════════════════════════════════════
+def run_hackernews(config, track_id: str = "ai_llm") -> list:
+    """采集 Hacker News 社区热点（按赛道关键词过滤）"""
+    logger.info(f"[7/N] 采集 Hacker News（{track_id}）...")
+    try:
+        from src.采集.hackernews import HackerNewsCollector
+
+        collector = HackerNewsCollector()
+        result = collector.run()
+
+        if result.success:
+            logger.info(f"  成功: {result.total_count} 条热点")
+            return result.data or []
+        else:
+            logger.warning(f"  Hacker News 失败: {result.error}")
+            return []
+    except Exception as e:
+        logger.warning(f"  Hacker News 异常: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════
+# 检测: Star 激增 + 论文爆发 + 融资新闻 + 新数据源信号
+# ═══════════════════════════════════════════════════════════════
 def run_detection(
     github_data: list,
     arxiv_data: list,
     news_data: list,
+    patents_data: list,
+    techcrunch_data: list,
+    hn_data: list,
     config,
     track_id: str = "ai_llm"
 ) -> list:
@@ -231,7 +308,7 @@ def run_detection(
         config: 全局配置
         track_id: 赛道ID，用于加载赛道专属规则
     """
-    logger.info("[5/6] 信号检测...")
+    logger.info("[信号检测] ...")
     try:
         from src.检测.star_detector import StarSurgeDetector
         from src.检测.paper_detector import PaperBurstDetector
@@ -390,6 +467,93 @@ def run_detection(
                     "priority": priority,
                     "message": f"AI 模型动态: {title}",
                 })
+
+        # ── Google Patents 专利趋势信号 ─────────────────
+        for patent in patents_data:
+            title = patent.get("title", "")
+            applicant = patent.get("applicant", "")
+            patent_number = patent.get("patent_number", "")
+            abstract = patent.get("abstract", "")
+            url = patent.get("url", "")
+            date_str = patent.get("date", "")
+
+            # 专利 = 技术热点信号（申请人含知名公司更可信）
+            notable_companies = [
+                "Google", "Meta", "Microsoft", "Apple", "Amazon", "Nvidia",
+                "Intel", "AMD", "Tesla", "OpenAI", "Anthropic", "ByteDance",
+                "Alibaba", "Tencent", "Baidu", "Huawei", "ByteDance",
+            ]
+            is_notable = any(c in applicant for c in notable_companies)
+            priority = "medium" if is_notable else "low"
+
+            alerts.append({
+                "type": "patent_trend",
+                "full_name": title,
+                "content": f"申请人: {applicant} | 专利号: {patent_number} | {abstract[:150]}".strip(),
+                "url": url,
+                "published_at": date_str,
+                "priority": priority,
+                "message": f"专利趋势: {title}",
+                "applicant": applicant,
+            })
+
+        # ── TechCrunch 国际科技新闻信号 ────────────────
+        for article in techcrunch_data:
+            title = article.get("title", "")
+            summary = article.get("summary", "")
+            link = article.get("link", "")
+            published = article.get("published", "")
+            categories = article.get("categories", [])
+
+            # TechCrunch 新闻质量较高，知名公司/大额融资直接给 high
+            notable = any(
+                n in title
+                for n in [
+                    "OpenAI", "Anthropic", "Google", "Meta", "Microsoft",
+                    "Tesla", "SpaceX", "Stripe", "Databricks", "Scale AI",
+                ]
+            )
+            has_funding = any(k in title + summary for k in ["raises", "funding", "round", "Series", "$"])
+            priority = "high" if (has_funding or notable) else "medium"
+
+            alerts.append({
+                "type": "techcrunch_news",
+                "full_name": title,
+                "content": summary[:200],
+                "url": link,
+                "published_at": published,
+                "priority": priority,
+                "message": f"国际科技: {title}",
+                "categories": categories,
+            })
+
+        # ── Hacker News 社区热点信号 ────────────────────
+        for story in hn_data:
+            title = story.get("title", "")
+            score = story.get("score", 0)
+            url = story.get("url", "")
+            time_str = story.get("time", "")
+            descendants = story.get("descendants", 0)
+            hn_by = story.get("by", "")
+
+            # HN 分数 > 200 = 强热点；> 100 = 中等；< 100 = 低
+            if score >= 200:
+                priority = "high"
+            elif score >= 100:
+                priority = "medium"
+            else:
+                priority = "low"
+
+            alerts.append({
+                "type": "hackernews_hot",
+                "full_name": title,
+                "content": f"HN Score: {score} | Comments: {descendants} | Posted by {hn_by}",
+                "url": url,
+                "published_at": time_str,
+                "priority": priority,
+                "message": f"HN 热点: {title}",
+                "score": score,
+            })
 
         logger.info(f"  检测到 {len(alerts)} 个告警")
         return alerts
@@ -656,9 +820,16 @@ def main():
         arxiv_data = run_arxiv(config, track_id)
         news_data = run_36kr(config, track_id)
         hf_data = []  # HF 在 cron 环境不可达
+        patents_data = run_google_patents(config, track_id)
+        techcrunch_data = run_techcrunch(config, track_id)
+        hn_data = run_hackernews(config, track_id)
 
         # 2. 检测
-        alerts = run_detection(github_data, arxiv_data, news_data, config, track_id)
+        alerts = run_detection(
+            github_data, arxiv_data, news_data,
+            patents_data, techcrunch_data, hn_data,
+            config, track_id
+        )
 
         # 3. 关联分析
         correlated = run_correlation(alerts, config)
