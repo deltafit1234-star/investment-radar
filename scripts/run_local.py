@@ -278,7 +278,7 @@ def run_itjuzi(config, track_id: str = "ai_llm") -> list:
     try:
         from src.采集.itjuzi import ItjuziFundingCollector
 
-        collector = ItjuziFundingCollector()
+        collector = ItjuziFundingCollector(config=config.get("itjuzi", {}))
         # 按赛道关键词搜索（keywords 是 dict: {include, exclude}）
         kw_dict = _get_track_keywords(track_id, config)
         keywords = kw_dict.get("include", []) if isinstance(kw_dict, dict) else kw_dict
@@ -885,7 +885,7 @@ def run_daily_report(
     generator = DailyReportGenerator(llm_config=config.llm_config)
     router = ReportRouter()
 
-    stats = {"generated": 0, "pushed": 0, "skipped": 0, "failed": 0, "tracks": []}
+    stats = {"generated": 0, "pushed": 0, "skipped": 0, "failed": 0, "silent_days": 0, "tracks": []}
 
     for track_cfg in target_tracks:
         track_id = track_cfg["track_id"]
@@ -909,14 +909,36 @@ def run_daily_report(
             stats["skipped"] += 1
             continue
 
-        # 生成报告
-        logger.info(f"[日报] 生成中: {track_name} ({len(signals)} 个信号)")
+        # 静默日逻辑：合并历史待合并信号
+        pending_signals = db.get_pending_signals(track_id)
+        merged_signals = pending_signals + signals
+        merged_count = len(pending_signals)
+        all_signals = merged_signals
+
+        # 信号不足（<3）：标记待合并，跳过报告生成
+        if len(all_signals) < generator.SILENT_THRESHOLD:
+            marked = db.mark_signals_pending(signals, track_id, report_date)
+            logger.info(
+                f"[日报] {track_name}: 信号{len(signals)}个 + 待合并{merged_count}个 "
+                f"= {len(all_signals)} < {generator.SILENT_THRESHOLD}，"
+                f"标记{marked}条待合并，跳过报告"
+            )
+            stats["silent_days"] += 1
+            stats["skipped"] += 1
+            continue
+
+        # 信号充足：生成报告（含合并信号）
+        logger.info(
+            f"[日报] 生成中: {track_name} ({len(signals)} 个今日 "
+            f"+ {merged_count} 个合并, 共{len(all_signals)}个)"
+        )
         try:
             report = generator.generate(
                 track_id=track_id,
                 track_name=track_name,
                 signals=signals,
                 report_date=report_date,
+                merged_signals=merged_signals if merged_count > 0 else [],
             )
         except Exception as e:
             logger.warning(f"[日报] 生成失败: {track_name} - {e}")
@@ -930,15 +952,20 @@ def run_daily_report(
                 "track_name": track_name,
                 "report_date": report_date,
                 "is_silent": report.get("is_silent", False),
-                "signal_count": report.get("signal_count", len(signals)),
-                "high_priority_count": sum(1 for s in signals if s.get("priority") == "high"),
-                "merged_count": 0,
+                "signal_count": len(all_signals),
+                "high_priority_count": sum(1 for s in all_signals if s.get("priority") == "high"),
+                "merged_count": merged_count,
                 "themes": report.get("themes"),
                 "report_text": report.get("report_text", ""),
                 "report_data": report,
             }
             saved_report = db.save_daily_report(report_data)
-            logger.info(f"[日报] 已保存: {track_name} / {report_date}")
+            # 合并完成后清除待合并记录
+            if merged_count > 0:
+                cleared = db.clear_pending_signals(track_id)
+                logger.info(f"[日报] 已保存: {track_name} / {report_date}，清除{cleared}条待合并")
+            else:
+                logger.info(f"[日报] 已保存: {track_name} / {report_date}")
             stats["generated"] += 1
         except Exception as e:
             logger.warning(f"[日报] 存库失败: {track_name} - {e}")
@@ -961,7 +988,8 @@ def run_daily_report(
 
     logger.info(
         f"[日报] 完成: 生成{stats['generated']}份 / "
-        f"推送{stats['pushed']}份 / 跳过{stats['skipped']}份 / 失败{stats['failed']}份"
+        f"推送{stats['pushed']}份 / 静默日{stats['silent_days']}个 / "
+        f"跳过{stats['skipped']}份 / 失败{stats['failed']}份"
     )
     return stats
 
@@ -1070,10 +1098,17 @@ def main():
         db = get_db()
         saved = 0
         skipped = 0
+        cross_track_skipped = 0
+        # 跨赛道去重指纹集合
+        seen_fingerprints: set = set()
+
         for sig in all_signals:
             title = (sig.get("full_name") or sig.get("title") or "")[:200]
             signal_type = sig.get("type", "unknown") or "unknown"
             track_id_sig = sig.get("track_id", "unknown")
+            # 跨赛道指纹：用规范化标题前100字符 + 来源URL
+            url = sig.get("url") or sig.get("link") or ""
+            fp = f"{title[:100].strip().lower()}|{url}".strip("|")
 
             if title:
                 dup = db.is_duplicate_signal(
@@ -1086,6 +1121,13 @@ def main():
                 if dup:
                     skipped += 1
                     continue
+
+                # 跨赛道去重：同一标题（无视赛道）只存第一个
+                if fp and fp != "|":
+                    if fp in seen_fingerprints:
+                        cross_track_skipped += 1
+                        continue
+                    seen_fingerprints.add(fp)
 
             try:
                 from src.core.tenant_config import TenantConfigLoader
@@ -1114,7 +1156,7 @@ def main():
                 saved += 1
             except Exception:
                 pass
-        logger.info(f"\n信号已存库: {saved} 条, 跳过重复: {skipped} 条")
+        logger.info(f"\n信号已存库: {saved} 条, 跳过重复: {skipped} 条, 跨赛道去重: {cross_track_skipped} 条")
     except Exception as e:
         logger.warning(f"  存DB异常: {e}")
 

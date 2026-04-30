@@ -233,6 +233,21 @@ class ReportSignal(Base):
         Index('idx_report_signal_report', 'report_id'),
     )
 
+
+class PendingSignal(Base):
+    """静默日待合并信号（信号不足<3时暂存，次日合并到正式报告）"""
+    __tablename__ = "pending_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    track_id = Column(String(50), nullable=False, index=True)
+    signal_data = Column(JSON)                # 信号完整数据（冗余存储，避免信号过期）
+    pending_since = Column(String(10))        # 标记日期 YYYY-MM-DD
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_pending_track', 'track_id'),
+    )
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -1101,6 +1116,50 @@ class Database:
                 .first()
             )
             return existing is not None
+        finally:
+            session.close()
+
+    def mark_signals_pending(self, signals: List[Dict[str, Any]], track_id: str, pending_since: str) -> int:
+        """将信号标记为待合并（静默日调用）"""
+        session = self.get_session()
+        try:
+            count = 0
+            for sig in signals:
+                ps = PendingSignal(
+                    track_id=track_id,
+                    signal_data=sig,
+                    pending_since=pending_since,
+                )
+                session.add(ps)
+                count += 1
+            session.commit()
+            return count
+        finally:
+            session.close()
+
+    def get_pending_signals(self, track_id: str) -> List[Dict[str, Any]]:
+        """获取某赛道所有待合并信号"""
+        session = self.get_session()
+        try:
+            rows = (
+                session.query(PendingSignal)
+                .filter(PendingSignal.track_id == track_id)
+                .order_by(PendingSignal.created_at)
+                .all()
+            )
+            return [row.signal_data for row in rows if row.signal_data]
+        finally:
+            session.close()
+
+    def clear_pending_signals(self, track_id: str) -> int:
+        """清除某赛道所有待合并信号（合并完成后调用）"""
+        session = self.get_session()
+        try:
+            count = session.query(PendingSignal).filter(
+                PendingSignal.track_id == track_id
+            ).delete()
+            session.commit()
+            return count
         finally:
             session.close()
 

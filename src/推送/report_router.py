@@ -48,13 +48,13 @@ class ReportRouter:
 
             if not report_text:
                 logger.warning(f"  报告内容为空，跳过: {tenant_id}")
-                return False
+                return {"ok": False, "message": None, "wechat_target": None, "track_name": report.get("track_name") or ""}
 
             # 从租户配置获取推送目标
             target = self._get_tenant_target(tenant_id)
             if not target:
                 logger.warning(f"  租户 {tenant_id} 未配置推送目标，跳过")
-                return False
+                return {"ok": False, "message": None, "wechat_target": None, "track_name": report.get("track_name") or ""}
 
             # 构建消息
             lines = [
@@ -74,6 +74,12 @@ class ReportRouter:
             message = "\n".join(lines)
             ok = notifier.send_message(message, target=target)
 
+            result = {
+                "ok": ok,
+                "message": message,
+                "wechat_target": target,
+                "track_name": report.get("track_name") or report.get("track_id", ""),
+            }
             if ok:
                 self.pushed_count += 1
                 logger.info(f"  ✅ 日报推送成功: {tenant_id} / {report.get('track_name')}")
@@ -81,12 +87,12 @@ class ReportRouter:
                 self.failed_count += 1
                 logger.warning(f"  ❌ 日报推送失败: {tenant_id}")
 
-            return ok
+            return result
 
         except Exception as e:
             logger.exception(f"  日报推送异常: {e}")
             self.failed_count += 1
-            return False
+            return {"ok": False, "message": None, "wechat_target": None, "track_name": report.get("track_name") or ""}
 
     def route_reports(
         self,
@@ -123,12 +129,15 @@ class ReportRouter:
                 if not self._tenant_subscribes_track(tenant_id, track_id):
                     continue
 
-                ok = self.push_report(report, tenant_id)
+                push_result = self.push_report(report, tenant_id)
+                ok = push_result.get("ok") if isinstance(push_result, dict) else push_result
                 results.append({
                     "tenant_id": tenant_id,
                     "track_id": track_id,
                     "ok": ok,
                     "report_date": report.get("date"),
+                    "message": push_result.get("message") if isinstance(push_result, dict) else None,
+                    "wechat_target": push_result.get("wechat_target") if isinstance(push_result, dict) else None,
                 })
 
         pushed = sum(1 for r in results if r["ok"])

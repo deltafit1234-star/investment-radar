@@ -132,7 +132,7 @@ class DailyReportGenerator:
             lines.append("【历史信号回顾】")
             for sig in signals[:5]:
                 title = sig.get("full_name") or sig.get("title", "")[:50]
-                sig_type = sig.get("type", "")
+                sig_type = sig.get("type") or sig.get("signal_type", "") or "unknown"
                 lines.append(f"  • [{sig_type}] {title}")
             lines.append("")
 
@@ -164,7 +164,7 @@ class DailyReportGenerator:
         """按信号类型分组"""
         by_type: Dict[str, list] = {}
         for sig in signals:
-            t = sig.get("type", "unknown")
+            t = sig.get("type") or sig.get("signal_type") or "unknown"
             by_type.setdefault(t, []).append(sig)
         return by_type
 
@@ -173,28 +173,29 @@ class DailyReportGenerator:
         themes_map: Dict[str, list] = {}
 
         for sig in signals:
-            sig_type = sig.get("type", "")
+            sig_type = sig.get("type") or sig.get("signal_type", "") or "unknown"
             title = sig.get("full_name") or sig.get("title", "")
             content = sig.get("content", "") or ""
 
-            # 简单主题识别
-            if sig_type in ("star_surge", "hackernews_hot"):
-                if any(k in (title+content).lower() for k in ["llm", "gpt", "language model", "大模型"]):
+            # 主题识别：优先按内容关键词，其次按信号类型
+            # funding_news 也走内容匹配，避免融资新闻被统一归类
+            if sig_type in ("star_surge", "hackernews_hot", "funding_news", "itjuzi_funding"):
+                if any(k in (title+content).lower() for k in ["llm", "gpt", "language model", "大模型", "chatgpt", "openai", "claude", "gemini"]):
                     theme = "AI大模型/基础模型"
-                elif any(k in (title+content).lower() for k in ["robot", "机械", "人形"]):
+                elif any(k in (title+content).lower() for k in ["robot", "机械臂", "人形机器人", "具身智能", "擎天柱", "宇树", "智元", " Figure", "Tesla Bot"]):
                     theme = "机器人/自动化"
-                elif any(k in (title+content).lower() for k in ["chip", "半导体", "gpu", "芯片"]):
+                elif any(k in (title+content).lower() for k in ["chip", "半导体", "gpu", "芯片", "光刻", "晶圆", "集成电路"]):
                     theme = "半导体/芯片"
-                elif any(k in (title+content).lower() for k in ["brain", "脑机", "BCI", "neural"]):
+                elif any(k in (title+content).lower() for k in ["brain", "脑机", "BCI", "neural", "神经接口", "neurosity"]):
                     theme = "脑机接口"
-                elif any(k in (title+content).lower() for k in ["auto", "驾驶", "vehicle", "EV"]):
+                elif any(k in (title+content).lower() for k in ["auto", "驾驶", "vehicle", "ev", "智能驾驶", "无人车", "robotaxi"]):
                     theme = "自动驾驶/新能源"
-                elif any(k in (title+content).lower() for k in ["energy", "solar", "储能", "电池"]):
+                elif any(k in (title+content).lower() for k in ["energy", "solar", "储能", "电池", "锂电", "钠电", "新能源", "碳中和"]):
                     theme = "新能源"
+                elif sig_type in ("funding_news", "itjuzi_funding"):
+                    theme = "融资/投资动态"
                 else:
                     theme = "其他技术热点"
-            elif sig_type in ("funding_news", "itjuzi_funding"):
-                theme = "融资/投资动态"
             elif sig_type in ("paper_burst", "patent_trend"):
                 theme = "学术/专利趋势"
             elif sig_type == "techcrunch_news":
@@ -276,7 +277,7 @@ class DailyReportGenerator:
                     sig.get("full_name") or sig.get("title", "")
                 )
                 content = self._clean_md(sig.get("content", "")[:100])
-                sig_type = sig.get("type", "")
+                sig_type = sig.get("type") or sig.get("signal_type", "") or "unknown"
                 lines.append(f"  ◆ [{sig_type}] {title}")
                 if content:
                     lines.append(f"    {content}")

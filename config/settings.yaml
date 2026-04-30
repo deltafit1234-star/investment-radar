@@ -42,6 +42,25 @@ notification:
   daily_brief_time: "08:30"
   real_time_enabled: true
 
+# IT桔子配置
+itjuzi:
+  cookie: "${ITJUZI_COOKIE}"  # 从环境变量读取，格式: security_token=xxx; session=yyy; 或留空使用公开接口
+  # 示例: cookie: "security_token=abc123; ITaji_user=myself%40example.com"
+
+# 飞书配置（预留）
+feishu:
+  app_id: "${FEISHU_APP_ID}"
+  app_secret: "${FEISHU_APP_SECRET}"
+  webhook_url: "${FEISHU_WEBHOOK_URL}"
+
+# 邮件配置（预留）
+email:
+  smtp_host: "${SMTP_HOST}"
+  smtp_port: "${SMTP_PORT:-587}"
+  smtp_user: "${SMTP_USER}"
+  smtp_password: "${SMTP_PASSWORD}"
+  from_address: "${EMAIL_FROM:-noreply@investradar.com}"
+
 # 日志配置
 logging:
   level: "INFO"

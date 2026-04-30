@@ -38,7 +38,7 @@ class ItjuziFundingCollector:
     def _get_headers(self) -> dict:
         """生成随机 UA 请求头"""
         ua = random.choice(USER_AGENTS)
-        return {
+        headers = {
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -46,6 +46,11 @@ class ItjuziFundingCollector:
             "Connection": "keep-alive",
             "Referer": "https://www.itjuzi.com/",
         }
+        # Cookie 来自 config（ITJUZI_COOKIE 环境变量）
+        cookie = self.config.get("cookie", "")
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
 
     def _fetch_page(self, url: str) -> Optional[str]:
         """获取页面 HTML"""
