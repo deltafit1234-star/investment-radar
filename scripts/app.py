@@ -316,6 +316,98 @@ def admin_push_stats(days: int = Query(7, ge=1, le=30)):
         session.close()
 
 
+# ─── 订阅管理 API ──────────────────────────────────────────────
+@app.get("/api/subscription/packages")
+def api_list_packages():
+    """列出所有套餐"""
+    from scripts.track_system import list_subscription_packages
+    return list_subscription_packages()
+
+@app.get("/api/subscription/status")
+def api_subscription_status(tenant_id: str = Query(...)):
+    """获取租户订阅状态"""
+    from scripts.track_system import get_tenant_subscription
+    sub = get_tenant_subscription(tenant_id)
+    if not sub:
+        return {"subscribed": False, "package_id": None}
+    return {
+        "subscribed": True,
+        "package_id": sub["plan"],
+        "package_name": sub.get("package_name", ""),
+        "company_limit": sub.get("company_limit", 0),
+        "keyword_limit": sub.get("keyword_limit", 0),
+        "has_personalized": bool(sub.get("has_personalized_report")),
+        "companies": sub.get("track_companies") or [],
+        "keywords": sub.get("track_keywords") or [],
+    }
+
+@app.get("/api/subscription/companies")
+def api_list_companies(tenant_id: str = Query(...)):
+    """列出租户关注的公司"""
+    from scripts.track_system import _get_companies
+    return _get_companies(tenant_id)
+
+@app.post("/api/subscription/companies")
+def api_add_companies(tenant_id: str = Query(...), companies: list[str] = Query(...)):
+    """添加关注公司"""
+    from scripts.track_system import add_companies, get_tenant_subscription, _get_default_package
+    from scripts.track_system import get_db
+    conn = get_db()
+    # Ensure subscription exists
+    cur = conn.cursor()
+    cur.execute("SELECT plan FROM tenant_subscriptions WHERE tenant_id=?", (tenant_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.execute("INSERT INTO tenant_subscriptions (tenant_id, track_id, plan, track_companies, track_keywords, enabled) VALUES (?,?,'starter','[]','[]',1)",
+                   (tenant_id, tenant_id))
+        conn.commit()
+    conn.close()
+    added = add_companies(tenant_id, companies)
+    return {"added": added}
+
+@app.delete("/api/subscription/companies")
+def api_remove_companies(tenant_id: str = Query(...), companies: list[str] = Query(...)):
+    """移除关注公司"""
+    from scripts.track_system import remove_companies
+    removed = remove_companies(tenant_id, companies)
+    return {"removed": removed}
+
+@app.get("/api/subscription/keywords")
+def api_list_keywords(tenant_id: str = Query(...)):
+    """列出租户关键词"""
+    from scripts.track_system import _get_keywords
+    return _get_keywords(tenant_id)
+
+@app.post("/api/subscription/keywords")
+def api_add_keywords(tenant_id: str = Query(...), keywords: list[str] = Query(...)):
+    """添加关键词"""
+    from scripts.track_system import add_keywords, get_db
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT plan FROM tenant_subscriptions WHERE tenant_id=?", (tenant_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.execute("INSERT INTO tenant_subscriptions (tenant_id, track_id, plan, track_companies, track_keywords, enabled) VALUES (?,?,'starter','[]','[]',1)",
+                   (tenant_id, tenant_id))
+        conn.commit()
+    conn.close()
+    added = add_keywords(tenant_id, keywords)
+    return {"added": added}
+
+@app.delete("/api/subscription/keywords")
+def api_remove_keywords(tenant_id: str = Query(...), keywords: list[str] = Query(...)):
+    """移除关键词"""
+    from scripts.track_system import remove_keywords
+    removed = remove_keywords(tenant_id, keywords)
+    return {"removed": removed}
+
+@app.get("/api/subscription/personalized")
+def api_personalized(tenant_id: str = Query(...), days: int = Query(7), limit: int = Query(20)):
+    """获取个人化信号"""
+    from scripts.track_system import get_personalized_signals
+    return get_personalized_signals(tenant_id, days=days, limit=limit)
+
+
 # ─── HTML Dashboard ────────────────────────────────────────────
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -395,6 +487,7 @@ tr.unread { background: #1e3a5f; }
     <button class="tab active" id="tabOverview" onclick="showTab('overview')">📊 概览</button>
     <button class="tab" id="tabAdmin" onclick="showTab('admin')">⚙️ 管理</button>
     <button class="tab" id="tabTenant" onclick="showTab('tenant')">🏢 多租户</button>
+    <button class="tab" id="tabSubscription" onclick="showTab('subscription')">💎 订阅管理</button>
   </div>
 
   <!-- Live signals panel -->
@@ -530,6 +623,85 @@ tr.unread { background: #1e3a5f; }
         <button class="refresh-btn" onclick="loadTenantData()">🔄 刷新</button>
       </div>
       <div id="tenantList">
+        <div class="loading">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Subscription management (hidden by default) -->
+  <div id="sectionSubscription" style="display:none">
+    <!-- Subscription status -->
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin-bottom:24px;">
+      <div class="card">
+        <div class="label">当前套餐</div>
+        <div class="value" id="subPackage" style="font-size:20px;">-</div>
+      </div>
+      <div class="card">
+        <div class="label">公司订阅</div>
+        <div class="value" id="subCompanies" style="font-size:20px;">-</div>
+      </div>
+      <div class="card">
+        <div class="label">关键词订阅</div>
+        <div class="value" id="subKeywords" style="font-size:20px;">-</div>
+      </div>
+      <div class="card">
+        <div class="label">个人化报告</div>
+        <div class="value" id="subPersonalized" style="font-size:20px;">-</div>
+      </div>
+    </div>
+
+    <!-- Tenant selector -->
+    <div class="card" style="margin-bottom:20px; padding:16px;">
+      <h3 style="font-size:14px; color:#e5e7eb; margin-bottom:12px;">👤 租户</h3>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <input id="subTenantId" placeholder="租户ID（留空使用当前用户）" value="o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat" style="background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:6px 10px; border-radius:6px; font-size:13px; width:320px;">
+        <button class="refresh-btn" onclick="loadSubscriptionData()">加载</button>
+      </div>
+    </div>
+
+    <!-- Packages info -->
+    <div class="signals" style="margin-bottom:20px;">
+      <div class="signals-header">
+        <h3>💎 套餐对比</h3>
+      </div>
+      <div id="packageList" style="padding:16px;"></div>
+    </div>
+
+    <!-- Company subscriptions -->
+    <div class="signals" style="margin-bottom:20px;">
+      <div class="signals-header">
+        <h3>🏢 关注公司</h3>
+      </div>
+      <div style="padding:16px;">
+        <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+          <input id="newCompany" placeholder="输入公司名，回车添加" style="background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:6px 10px; border-radius:6px; font-size:13px; width:240px;">
+          <button class="refresh-btn" onclick="addCompany()">添加公司</button>
+        </div>
+        <div id="companyTags" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+      </div>
+    </div>
+
+    <!-- Keyword subscriptions -->
+    <div class="signals" style="margin-bottom:20px;">
+      <div class="signals-header">
+        <h3>🔍 关键词订阅</h3>
+      </div>
+      <div style="padding:16px;">
+        <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+          <input id="newKeyword" placeholder="输入关键词，回车添加" style="background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:6px 10px; border-radius:6px; font-size:13px; width:240px;">
+          <button class="refresh-btn" onclick="addKeyword()">添加关键词</button>
+        </div>
+        <div id="keywordTags" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+      </div>
+    </div>
+
+    <!-- Personalized signals preview -->
+    <div class="signals">
+      <div class="signals-header">
+        <h3>📌 个人化信号预览</h3>
+        <button class="refresh-btn" onclick="loadPersonalizedSignals()">🔄 刷新</button>
+      </div>
+      <div id="personalizedSignals">
         <div class="loading">加载中...</div>
       </div>
     </div>
@@ -707,9 +879,11 @@ function showTab(tab) {
   document.getElementById("sectionSignals").style.display = tab === "overview" ? "" : "none";
   document.getElementById("sectionAdmin").style.display = tab === "admin" ? "" : "none";
   document.getElementById("sectionTenant").style.display = tab === "tenant" ? "" : "none";
+  document.getElementById("sectionSubscription").style.display = tab === "subscription" ? "" : "none";
 
   if (tab === "admin") loadAdminData();
   if (tab === "tenant") loadTenantData();
+  if (tab === "subscription") loadSubscriptionData();
 }
 
 // ── Load admin data ──────────────────────────────────────────
@@ -940,6 +1114,145 @@ async function deleteTenant(tenantId) {
     loadTenantData();
   } catch(e) { alert("删除失败: " + e.message); }
 }
+
+// ── Subscription Management ────────────────────────────────────
+async function loadSubscriptionData() {
+  const tenantId = document.getElementById("subTenantId").value.trim() || "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat";
+
+  // Load packages
+  try {
+    const packages = await api("/subscription/packages");
+    const container = document.getElementById("packageList");
+    container.innerHTML = `<table style="width:100%;font-size:13px;">
+      <thead><tr><th>套餐</th><th>公司限额</th><th>关键词限额</th><th>个人化报告</th><th>月费</th></tr></thead>
+      <tbody>` +
+      packages.map(p => {
+        const isCurrent = p.id === document.getElementById("subPackage").textContent ||
+          (p.id === "free" && document.getElementById("subPackage").textContent === "-");
+        return `<tr style="${isCurrent ? 'background:#1e3a5f' : ''}">
+          <td><strong style="color:${p.id === 'pro' ? '#f59e0b' : p.id === 'enterprise' ? '#ef4444' : '#e5e7eb'}">${p.name}</strong> ${isCurrent ? '✓' : ''}</td>
+          <td>${p.company_limit || '无限制'}</td>
+          <td>${p.keyword_limit || '无限制'}</td>
+          <td>${p.has_personalized_report ? '✅' : '❌'}</td>
+          <td>¥${p.price_monthly || 0}/月</td>
+        </tr>`;
+      }).join("") + `</tbody></table>`;
+  } catch(e) { document.getElementById("packageList").innerHTML = "<div style='padding:16px;color:#ef4444'>加载失败</div>"; }
+
+  // Load subscription status
+  try {
+    const status = await api(`/subscription/status?tenant_id=${encodeURIComponent(tenantId)}`);
+    if (!status.subscribed) {
+      document.getElementById("subPackage").textContent = "未订阅";
+      document.getElementById("subCompanies").textContent = "0";
+      document.getElementById("subKeywords").textContent = "0";
+      document.getElementById("subPersonalized").textContent = "❌";
+    } else {
+      document.getElementById("subPackage").textContent = status.package_name || status.package_id;
+      const companies = status.companies || [];
+      const keywords = status.keywords || [];
+      document.getElementById("subCompanies").textContent = `${companies.length}/${status.company_limit || '∞'}`;
+      document.getElementById("subKeywords").textContent = `${keywords.length}/${status.keyword_limit || '∞'}`;
+      document.getElementById("subPersonalized").textContent = status.has_personalized ? "✅" : "❌";
+    }
+  } catch(e) { console.error("加载订阅状态失败", e); }
+
+  // Load company tags
+  try {
+    const companies = await api(`/subscription/companies?tenant_id=${encodeURIComponent(tenantId)}`);
+    const container = document.getElementById("companyTags");
+    container.innerHTML = (companies || []).map(c =>
+      `<span style="background:#1e3a5f;color:#93c5fd;padding:4px 12px;border-radius:12px;font-size:13px;display:inline-flex;align-items:center;gap:6px;">
+        ${c}
+        <span onclick="removeCompany('${c}')" style="cursor:pointer;color:#fca5a5;font-weight:bold;margin-left:2px;">×</span>
+      </span>`
+    ).join("");
+    if (!companies || !companies.length) container.innerHTML = "<span style='color:#6b7280;font-size:13px;'>暂无关注公司</span>";
+  } catch(e) { document.getElementById("companyTags").innerHTML = "<span style='color:#ef4444'>加载失败</span>"; }
+
+  // Load keyword tags
+  try {
+    const keywords = await api(`/subscription/keywords?tenant_id=${encodeURIComponent(tenantId)}`);
+    const container = document.getElementById("keywordTags");
+    container.innerHTML = (keywords || []).map(k =>
+      `<span style="background:#1e3a2f;color:#6ee7b7;padding:4px 12px;border-radius:12px;font-size:13px;display:inline-flex;align-items:center;gap:6px;">
+        ${k}
+        <span onclick="removeKeyword('${k}')" style="cursor:pointer;color:#fca5a5;font-weight:bold;margin-left:2px;">×</span>
+      </span>`
+    ).join("");
+    if (!keywords || !keywords.length) container.innerHTML = "<span style='color:#6b7280;font-size:13px;'>暂无关键词</span>";
+  } catch(e) { document.getElementById("keywordTags").innerHTML = "<span style='color:#ef4444'>加载失败</span>"; }
+
+  loadPersonalizedSignals();
+}
+
+async function loadPersonalizedSignals() {
+  const tenantId = document.getElementById("subTenantId").value.trim() || "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat";
+  const container = document.getElementById("personalizedSignals");
+  try {
+    const data = await api(`/subscription/personalized?tenant_id=${encodeURIComponent(tenantId)}&days=7&limit=20`);
+    const co = data.company_signals || [];
+    const kw = data.keyword_signals || [];
+    if (!co.length && !kw.length) {
+      container.innerHTML = "<div style='padding:20px;text-align:center;color:#6b7280;font-size:14px;'>暂无匹配信号（信号库近期无相关动态）</div>";
+      return;
+    }
+    let html = "";
+    if (co.length) {
+      html += `<div style="padding:12px 16px;background:#1e3a5f;color:#93c5fd;font-size:13px;font-weight:500;">🏢 公司订阅信号（${co.length}条）</div>`;
+      co.forEach(s => { html += `<div style="padding:10px 16px;border-bottom:1px solid #374151;font-size:13px;">[${s.signal_type}] ${s.title || '-'} <span style="color:#6b7280;margin-left:8px;">${(s.content||'').slice(0,60)}</span></div>`; });
+    }
+    if (kw.length) {
+      html += `<div style="padding:12px 16px;background:#1e3a2f;color:#6ee7b7;font-size:13px;font-weight:500;margin-top:8px;">🔍 关键词订阅信号（${kw.length}条）</div>`;
+      kw.forEach(s => { html += `<div style="padding:10px 16px;border-bottom:1px solid #374151;font-size:13px;">[${s.signal_type}] ${s.title || '-'} <span style="color:#6b7280;margin-left:8px;">${(s.content||'').slice(0,60)}</span></div>`; });
+    }
+    container.innerHTML = html;
+  } catch(e) { container.innerHTML = "<div style='padding:20px;color:#ef4444'>加载失败: " + e.message + "</div>"; }
+}
+
+async function addCompany() {
+  const tenantId = document.getElementById("subTenantId").value.trim() || "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat";
+  const input = document.getElementById("newCompany");
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    await api(`/subscription/companies?tenant_id=${encodeURIComponent(tenantId)}&companies=${encodeURIComponent(name)}`, {method:"POST"});
+    input.value = "";
+    loadSubscriptionData();
+  } catch(e) { alert("添加失败: " + e.message); }
+}
+
+async function removeCompany(name) {
+  const tenantId = document.getElementById("subTenantId").value.trim() || "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat";
+  try {
+    await api(`/subscription/companies?tenant_id=${encodeURIComponent(tenantId)}&companies=${encodeURIComponent(name)}`, {method:"DELETE"});
+    loadSubscriptionData();
+  } catch(e) { alert("移除失败: " + e.message); }
+}
+
+async function addKeyword() {
+  const tenantId = document.getElementById("subTenantId").value.trim() || "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat";
+  const input = document.getElementById("newKeyword");
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    await api(`/subscription/keywords?tenant_id=${encodeURIComponent(tenantId)}&keywords=${encodeURIComponent(name)}`, {method:"POST"});
+    input.value = "";
+    loadSubscriptionData();
+  } catch(e) { alert("添加失败: " + e.message); }
+}
+
+async function removeKeyword(name) {
+  const tenantId = document.getElementById("subTenantId").value.trim() || "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat";
+  try {
+    await api(`/subscription/keywords?tenant_id=${encodeURIComponent(tenantId)}&keywords=${encodeURIComponent(name)}`, {method:"DELETE"});
+    loadSubscriptionData();
+  } catch(e) { alert("移除失败: " + e.message); }
+}
+
+// Enter key support
+document.getElementById("newCompany")?.addEventListener("keydown", e => { if (e.key === "Enter") addCompany(); });
+document.getElementById("newKeyword")?.addEventListener("keydown", e => { if (e.key === "Enter") addKeyword(); });
 </script>
 </body>
 </html>
