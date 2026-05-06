@@ -340,10 +340,11 @@ def format_signals(signals, count=10, translate=True):
 
 # ── PDF生成 ─────────────────────────────────────────────────────────────────
 def gen_pdf(output_path, signals_or_sections, report_type='premium',
-            theme_analysis=None, overview=None):
+            theme_analysis=None, overview=None, personalized=None):
     """
     生成PDF
     report_type: 'premium' | 'normal'
+    personalized: dict with 'company_signals' and 'keyword_signals' (付费租户专属)
     """
     sys_path_insert = [PROJECT_DIR + '/scripts']
     import sys; sys.path.insert(0, PROJECT_DIR + '/scripts')
@@ -396,6 +397,47 @@ def gen_pdf(output_path, signals_or_sections, report_type='premium',
 
     # 本周概览
     story.append(section_title('本周概览', space_before=0, space_after=3*mm))
+    # ── 个人化「您的关注动态」章节（仅付费租户尊享版）──────────────────────────
+    def build_personalized_section(personalized):
+        """渲染「您的关注动态」"""
+        if not personalized:
+            return []
+        company_sigs = personalized.get('company_signals', [])
+        keyword_sigs = personalized.get('keyword_signals', [])
+        if not company_sigs and not keyword_sigs:
+            return []
+        paras = []
+        paras.append(section_title('您的关注动态', space_before=20, space_after=3*mm))
+        # 公司订阅
+        if company_sigs:
+            sty_co = ParagraphStyle('pco', fontName=FONT_SCS_BOLD, fontSize=9,
+                                    textColor=C_ACCENT, spaceBefore=2*mm, spaceAfter=1*mm)
+            paras.append(Paragraph('🏢 公司订阅', sty_co))
+            # 按公司名聚合
+            from collections import defaultdict
+            by_company = defaultdict(list)
+            for s in company_sigs:
+                by_company[s.get('matched_company', '未知')].append(s)
+            for company, sigs in by_company.items():
+                sty_co2 = ParagraphStyle('pco2', fontName=FONT_SCS_BOLD, fontSize=9,
+                                         textColor=C_ACCENT, spaceBefore=1.5*mm, spaceAfter=0.5*mm)
+                paras.append(Paragraph(f'  {company}（{len(sigs)}条）', sty_co2))
+                for sig in sigs[:5]:
+                    title = sig.get('title', '')[:50]
+                    cat = sig.get('signal_type', '')
+                    paras.append(Paragraph(f'    · {title}', ParagraphStyle('pcod', fontName=FONT_SCS, fontSize=8.5, textColor=C_DARK, leading=13)))
+        # 关键词订阅
+        if keyword_sigs:
+            sty_kw = ParagraphStyle('pkw', fontName=FONT_SCS_BOLD, fontSize=9,
+                                    textColor=C_ACCENT, spaceBefore=2.5*mm, spaceAfter=1*mm)
+            paras.append(Paragraph('🔍 关键词订阅', sty_kw))
+            for sig in keyword_sigs[:5]:
+                title = sig.get('title', '')[:50]
+                cat = sig.get('signal_type', '')
+                paras.append(Paragraph(f'    · {title}', ParagraphStyle('pkd', fontName=FONT_SCS, fontSize=8.5, textColor=C_DARK, leading=13)))
+        paras.append(Spacer(1, 4*mm))
+        return paras
+
     story.append(build_overview_table(overview))
     story.append(Spacer(1, 6*mm))
 
@@ -413,6 +455,10 @@ def gen_pdf(output_path, signals_or_sections, report_type='premium',
         for p in build_signals_list(international):
             story.append(p)
         story.append(Spacer(1, 6*mm))
+
+        # 个人化「您的关注动态」
+        for p in build_personalized_section(personalized):
+            story.append(p)
 
         if theme_analysis:
             story.append(section_title('主题趋势', space_before=16, space_after=3*mm))
@@ -505,6 +551,18 @@ def main():
              if '\u4e00' <= c <= '\u9fff')
     print(f"   主题分析: {cn} 字")
 
+    # 付费租户个人化信号（仅当有订阅数据时）
+    personalized = None
+    from scripts.track_system import get_personalized_signals, get_tenant_subscription
+    SYSTEM_TENANT = "o9cq801RJ2JWK_pnZsCG4ATRP_t8@im.wechat"
+    sub = get_tenant_subscription(SYSTEM_TENANT)
+    if sub and sub.get('has_personalized_report'):
+        personalized = get_personalized_signals(SYSTEM_TENANT, days=7, limit=20)
+        co_count = len(personalized.get('company_signals', []))
+        kw_count = len(personalized.get('keyword_signals', []))
+        if co_count or kw_count:
+            print(f"   📌 个人化：{co_count}条公司订阅 + {kw_count}条关键词订阅")
+
     # 生成尊享版
     import time
     ts = time.strftime('%m%d%H%M')
@@ -513,7 +571,8 @@ def main():
                       {'domestic': domestic_fmt, 'international': international_fmt},
                       report_type='premium',
                       theme_analysis=theme_analysis,
-                      overview=overview)
+                      overview=overview,
+                      personalized=personalized)
     print(f"✅ 尊享版: {premium_path} ({size_p//1024}KB)")
 
     # 生成普通版

@@ -468,6 +468,235 @@ def get_tracked_for_report(tenant_id=None, limit=10):
         })
     return result
 
+# ── 订阅管理 ────────────────────────────────────────────────────────────────
+def get_tenant_subscription(tenant_id):
+    """获取租户订阅信息"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT ts.*, sp.name as package_name, sp.company_limit, sp.keyword_limit,
+               sp.has_personalized_report, sp.price_monthly
+        FROM tenant_subscriptions ts
+        LEFT JOIN subscription_packages sp ON ts.plan = sp.id
+        WHERE ts.tenant_id=?
+    """, (tenant_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_subscription_package(package_id):
+    """获取套餐信息"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM subscription_packages WHERE id=?", (package_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def list_subscription_packages():
+    """列出所有套餐"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM subscription_packages ORDER BY price_monthly")
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+def _get_companies(tenant_id):
+    """读取租户公司列表"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT track_companies FROM tenant_subscriptions WHERE tenant_id=?", (tenant_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0]:
+        return json.loads(row[0])
+    return []
+
+def _set_companies(tenant_id, companies):
+    """写入租户公司列表"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE tenant_subscriptions SET track_companies=? WHERE tenant_id=?", (json.dumps(companies, ensure_ascii=False), tenant_id))
+    conn.commit()
+    affected = cur.rowcount
+    conn.close()
+    if affected == 0:
+        # 租户不存在则插入
+        cur.execute("INSERT INTO tenant_subscriptions (tenant_id, track_companies, track_keywords, plan, enabled) VALUES (?,?,'[]',?,1)",
+                    (tenant_id, json.dumps(companies, ensure_ascii=False), _get_default_package()))
+    conn.commit()
+    conn.close()
+
+def _get_keywords(tenant_id):
+    """读取租户关键词列表"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT track_keywords FROM tenant_subscriptions WHERE tenant_id=?", (tenant_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0]:
+        return json.loads(row[0])
+    return []
+
+def _set_keywords(tenant_id, keywords):
+    """写入租户关键词列表"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE tenant_subscriptions SET track_keywords=? WHERE tenant_id=?", (json.dumps(keywords, ensure_ascii=False), tenant_id))
+    conn.commit()
+    affected = cur.rowcount
+    conn.close()
+    if affected == 0:
+        cur.execute("INSERT INTO tenant_subscriptions (tenant_id, track_companies, track_keywords, plan, enabled) VALUES (?,'[]',?,?,1)",
+                    (tenant_id, json.dumps(keywords, ensure_ascii=False), _get_default_package()))
+    conn.commit()
+    conn.close()
+
+def _get_default_package():
+    return "free"
+
+def add_companies(tenant_id, companies):
+    """追加公司到订阅列表"""
+    existing = _get_companies(tenant_id)
+    # 检查套餐上限
+    pkg = get_subscription_package(_get_tenant_package(tenant_id))
+    limit = pkg.get("company_limit") if pkg else 0
+    for c in companies:
+        if c not in existing:
+            if limit is not None and len(existing) >= limit and limit > 0:
+                return {"ok": False, "error": f"公司订阅已达上限({limit}家)", "current": existing}
+            existing.append(c)
+    _set_companies(tenant_id, existing)
+    return {"ok": True, "companies": existing}
+
+def remove_companies(tenant_id, companies):
+    """从订阅列表移除公司"""
+    existing = _get_companies(tenant_id)
+    updated = [c for c in existing if c not in companies]
+    _set_companies(tenant_id, updated)
+    return {"ok": True, "companies": updated}
+
+def add_keywords(tenant_id, keywords):
+    """追加关键词到订阅列表"""
+    existing = _get_keywords(tenant_id)
+    pkg = get_subscription_package(_get_tenant_package(tenant_id))
+    limit = pkg.get("keyword_limit") if pkg else 10
+    for k in keywords:
+        if k not in existing:
+            if limit is not None and len(existing) >= limit:
+                return {"ok": False, "error": f"关键词订阅已达上限({limit}个)", "current": existing}
+            existing.append(k)
+    _set_keywords(tenant_id, existing)
+    return {"ok": True, "keywords": existing}
+
+def remove_keywords(tenant_id, keywords):
+    """从订阅列表移除关键词"""
+    existing = _get_keywords(tenant_id)
+    updated = [k for k in existing if k not in keywords]
+    _set_keywords(tenant_id, updated)
+    return {"ok": True, "keywords": updated}
+
+def _get_tenant_package(tenant_id):
+    """获取租户套餐ID"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT plan FROM tenant_subscriptions WHERE tenant_id=?", (tenant_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else _get_default_package()
+
+# ── 订阅信号匹配 ────────────────────────────────────────────────────────────────
+def match_signal_for_subscriptions(signal):
+    """
+    对入库信号，检查所有租户的公司订阅匹配情况。
+    返回：[(tenant_id, signal_id, matched_company), ...]
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    # 查所有有公司订阅且有个人化报告权限的租户
+    cur.execute("""
+        SELECT ts.tenant_id, ts.track_companies, sp.has_personalized_report
+        FROM tenant_subscriptions ts
+        JOIN subscription_packages sp ON ts.plan = sp.id
+        WHERE ts.enabled=1 AND sp.has_personalized_report=1
+          AND ts.track_companies IS NOT NULL AND ts.track_companies != '[]'
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    title = signal.get("title") or ""
+    content = signal.get("content") or ""
+    text = (title + " " + content).lower()
+
+    results = []
+    for tenant_id, track_companies_json, has_report in rows:
+        companies = json.loads(track_companies_json) if track_companies_json else []
+        for company in companies:
+            if company.lower() in text:
+                results.append((tenant_id, signal["id"], company))
+    return results
+
+def process_subscription_matching(signal):
+    """
+    处理信号的订阅匹配，写入 tracked_signals。
+    """
+    matched = match_signal_for_subscriptions(signal)
+    for tenant_id, signal_id, company in matched:
+        conn = get_db()
+        cur = conn.cursor()
+        try:
+            now = datetime.now().isoformat()
+            cur.execute("""
+                INSERT INTO tracked_signals
+                    (signal_id, track_type, tenant_id, matched_company, reason, status, first_seen_at, last_updated_at)
+                VALUES (?, 'company_subscription', ?, ?, ?, 'active', ?, ?)
+            """, (signal_id, tenant_id, company, f"公司订阅匹配: {company}", now, now))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass  # 已在跟踪
+        finally:
+            conn.close()
+    return matched
+
+def get_personalized_signals(tenant_id, days=7, limit=20):
+    """
+    获取付费租户个人化信号（公司订阅实时匹配 + 关键词订阅报告时匹配）。
+    返回格式：{"company_signals": [...], "keyword_signals": [...]}
+    """
+    conn = get_db()
+    cur = conn.cursor()
+
+    # 公司订阅：从 tracked_signals 查
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+        SELECT ts.*, s.title, s.content, s.signal_type, s.priority, s.track_id, s.created_at
+        FROM tracked_signals ts
+        JOIN signals s ON ts.signal_id = s.id
+        WHERE ts.tenant_id=? AND ts.status='active'
+          AND ts.track_type='company_subscription'
+          AND ts.last_updated_at >= ?
+        ORDER BY ts.last_updated_at DESC
+        LIMIT ?
+    """, (tenant_id, since, limit))
+    company_signals = [dict(r) for r in cur.fetchall()]
+
+    # 关键词订阅：从 signals 表按关键词全文匹配
+    keywords = _get_keywords(tenant_id)
+    keyword_signals = []
+    if keywords:
+        conditions = " OR ".join(["(title LIKE ? OR content LIKE ?)"] * len(keywords))
+        params = [f"%{kw}%" for kw in keywords for _ in range(2)]
+        cur.execute(f"""
+            SELECT * FROM signals
+            WHERE created_at >= ? AND ({conditions})
+            ORDER BY created_at DESC LIMIT ?
+        """, [since] + params + [limit])
+        keyword_signals = [dict(r) for r in cur.fetchall()]
+
+    conn.close()
+    return {"company_signals": company_signals, "keyword_signals": keyword_signals}
+
 # ── 轻量 API（FastAPI）───────────────────────────────────────────────────────
 """
 启动方式: uvicorn scripts.track_system:app --host 0.0.0.0 --port 7860
@@ -488,6 +717,80 @@ class ConfigRequest(BaseModel):
     track_mode: Optional[str] = None
     auto_track_enabled: Optional[int] = None
     notification_enabled: Optional[int] = None
+
+# ── 订阅 API ────────────────────────────────────────────────────────────────
+class CompanyListRequest(BaseModel):
+    companies: list[str]
+
+class KeywordListRequest(BaseModel):
+    keywords: list[str]
+
+@app.get("/api/subscriptions")
+def api_get_subscriptions(tenant_id: str = Query(...)):
+    """获取租户完整订阅状态"""
+    sub = get_tenant_subscription(tenant_id)
+    if not sub:
+        raise HTTPException(404, "租户不存在")
+    return {
+        "tenant_id": tenant_id,
+        "package": sub.get("package_name", "免费版"),
+        "has_personalized_report": bool(sub.get("has_personalized_report")),
+        "companies": _get_companies(tenant_id),
+        "keywords": _get_keywords(tenant_id),
+        "company_limit": sub.get("company_limit"),
+        "keyword_limit": sub.get("keyword_limit"),
+    }
+
+@app.put("/api/subscriptions/companies")
+def api_add_companies(body: CompanyListRequest, tenant_id: str = Query(...)):
+    """追加公司订阅"""
+    result = add_companies(tenant_id, body.companies)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+@app.delete("/api/subscriptions/companies")
+def api_remove_companies(body: CompanyListRequest, tenant_id: str = Query(...)):
+    """移除公司订阅"""
+    return remove_companies(tenant_id, body.companies)
+
+@app.get("/api/subscriptions/companies")
+def api_list_companies(tenant_id: str = Query(...)):
+    """查询公司订阅列表"""
+    return {"companies": _get_companies(tenant_id)}
+
+@app.put("/api/subscriptions/keywords")
+def api_add_keywords(body: KeywordListRequest, tenant_id: str = Query(...)):
+    """追加关键词订阅"""
+    result = add_keywords(tenant_id, body.keywords)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+@app.delete("/api/subscriptions/keywords")
+def api_remove_keywords(body: KeywordListRequest, tenant_id: str = Query(...)):
+    """移除关键词订阅"""
+    return remove_keywords(tenant_id, body.keywords)
+
+@app.get("/api/subscriptions/keywords")
+def api_list_keywords(tenant_id: str = Query(...)):
+    """查询关键词订阅列表"""
+    return {"keywords": _get_keywords(tenant_id)}
+
+@app.get("/api/packages")
+def api_list_packages():
+    """列出所有套餐"""
+    return {"packages": list_subscription_packages()}
+
+@app.get("/api/personalized")
+def api_personalized(tenant_id: str = Query(...), days: int = Query(7), limit: int = Query(20)):
+    """获取个人化信号（付费租户专属）"""
+    sub = get_tenant_subscription(tenant_id)
+    if not sub:
+        raise HTTPException(404, "租户不存在")
+    if not sub.get("has_personalized_report"):
+        raise HTTPException(403, "该套餐无个人化报告权限")
+    return get_personalized_signals(tenant_id, days=days, limit=limit)
 
 @app.get("/api/track")
 def api_list_tracked(tenant_id: str = Query(...), status: str = Query("active")):

@@ -261,6 +261,57 @@ class PendingSignal(Base):
         }
 
 
+class WeeklyReport(Base):
+    """每周情报报告表（Phase 2 - 周报）"""
+    __tablename__ = "weekly_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    track_id = Column(String(50), nullable=False, index=True)
+    track_name = Column(String(200))
+    week_start = Column(String(10), nullable=False)          # 周起始日期 YYYY-MM-DD（周一）
+    week_end = Column(String(10), nullable=False)            # 周结束日期 YYYY-MM-DD（周日）
+    edition = Column(String(20), default="normal")             # normal / premium
+    signal_count = Column(Integer, default=0)
+    domestic_count = Column(Integer, default=0)               # 国内信号数
+    international_count = Column(Integer, default=0)           # 国际信号数
+    high_priority_count = Column(Integer, default=0)
+    week_over_week = Column(JSON, nullable=True)              # 本周 vs 上周对比数据
+    themes = Column(JSON, nullable=True)                      # 主题分组
+    domestic_signals = Column(JSON, nullable=True)            # 国内信号（结构化）
+    international_signals = Column(JSON, nullable=True)       # 国际信号（结构化）
+    report_text = Column(Text, nullable=True)                # 推送用文本摘要
+    report_data = Column(JSON, nullable=True)                 # 完整报告数据
+    pdf_path = Column(String(500), nullable=True)            # PDF 文件路径
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    pushed_at = Column(DateTime, nullable=True)
+    status = Column(String(20), default="pending")            # pending/generated/pushed/failed
+
+    __table_args__ = (
+        Index('idx_weekly_track_week', 'track_id', 'week_start', 'edition', unique=True),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "track_id": self.track_id,
+            "track_name": self.track_name,
+            "week_start": self.week_start,
+            "week_end": self.week_end,
+            "edition": self.edition,
+            "signal_count": self.signal_count,
+            "domestic_count": self.domestic_count,
+            "international_count": self.international_count,
+            "high_priority_count": self.high_priority_count,
+            "week_over_week": self.week_over_week,
+            "themes": self.themes,
+            "report_text": self.report_text,
+            "pdf_path": self.pdf_path,
+            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
+            "pushed_at": self.pushed_at.isoformat() if self.pushed_at else None,
+            "status": self.status,
+        }
+
+
 class TrendingArchive(Base):
     """GitHub Trending 每日归档表"""
     __tablename__ = "trending_archive"
@@ -1160,6 +1211,90 @@ class Database:
             ).delete()
             session.commit()
             return count
+        finally:
+            session.close()
+
+    def save_weekly_report(self, data: Dict[str, Any]) -> WeeklyReport:
+        """保存周报（存在则更新，不存在则创建）"""
+        session = self.get_session()
+        try:
+            existing = session.query(WeeklyReport).filter(
+                WeeklyReport.track_id == data["track_id"],
+                WeeklyReport.week_start == data["week_start"],
+                WeeklyReport.edition == data.get("edition", "normal"),
+            ).first()
+
+            if existing:
+                for key, value in data.items():
+                    if hasattr(existing, key):
+                        setattr(existing, key, value)
+                report = existing
+            else:
+                report = WeeklyReport(**data)
+                session.add(report)
+            session.commit()
+            session.refresh(report)
+            return report
+        finally:
+            session.close()
+
+    def get_weekly_reports_for_week(
+        self, week_start: str, edition: str = None
+    ) -> List[WeeklyReport]:
+        """获取某周所有周报"""
+        session = self.get_session()
+        try:
+            q = session.query(WeeklyReport).filter(
+                WeeklyReport.week_start == week_start
+            )
+            if edition:
+                q = q.filter(WeeklyReport.edition == edition)
+            return q.all()
+        finally:
+            session.close()
+
+    def get_signals_for_week(
+        self, week_start: str, week_end: str, track_id: str = None
+    ) -> List[Signal]:
+        """获取某周所有信号（供周报生成用）"""
+        session = self.get_session()
+        try:
+            q = session.query(Signal).filter(
+                Signal.created_at >= f"{week_start} 00:00:00",
+                Signal.created_at <= f"{week_end} 23:59:59",
+            )
+            if track_id:
+                q = q.filter(Signal.track_id == track_id)
+            return q.all()
+        finally:
+            session.close()
+
+    def get_previous_week_signal_count(
+        self, prev_week_start: str, prev_week_end: str, track_id: str
+    ) -> int:
+        """获取上周信号数量（用于周环比计算）"""
+        session = self.get_session()
+        try:
+            count = session.query(Signal).filter(
+                Signal.created_at >= f"{prev_week_start} 00:00:00",
+                Signal.created_at <= f"{prev_week_end} 23:59:59",
+                Signal.track_id == track_id,
+            ).count()
+            return count
+        finally:
+            session.close()
+
+    def mark_weekly_report_pushed(self, report_id: int):
+        """标记周报已推送"""
+        session = self.get_session()
+        try:
+            report = session.query(WeeklyReport).filter(
+                WeeklyReport.id == report_id
+            ).first()
+            if report:
+                report.status = "pushed"
+                report.pushed_at = datetime.utcnow()
+                session.commit()
         finally:
             session.close()
 

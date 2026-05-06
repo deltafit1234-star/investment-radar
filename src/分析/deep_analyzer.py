@@ -122,7 +122,7 @@ Stars：{stars}（变化：{change}）
             return f"""请分析以下信号：{title}"""
 
     def _call_api(self, prompt: str) -> str:
-        """发送请求到 MiniMax API"""
+        """发送请求到 MiniMax API，异常时抛出而非返回错误文本"""
         url = f"{self.base_url}/messages"
         headers = {
             "Content-Type": "application/json",
@@ -143,8 +143,11 @@ Stars：{stars}（变化：{change}）
         content_blocks = data.get("content", [])
         for block in content_blocks:
             if block.get("type") == "text":
-                return block["text"]
-        return str(data)
+                text = block["text"].strip()
+                # 过滤异常响应：过短、错误标记、API error字样
+                if text and len(text) > 10 and "error" not in text.lower():
+                    return text
+        raise ValueError(f"API 响应内容异常或为空: {str(data)[:200]}")
 
     def _mock_analysis(self, signal: Dict[str, Any], track_config: Dict[str, Any]) -> str:
         """无 API Key 时的 Mock 深度分析"""
